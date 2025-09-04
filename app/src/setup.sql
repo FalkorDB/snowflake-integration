@@ -98,3 +98,24 @@ $$;
 GRANT USAGE ON PROCEDURE app_public.get_service_containers() TO APPLICATION ROLE app_admin;
 GRANT USAGE ON PROCEDURE app_public.get_service_containers() TO APPLICATION ROLE app_user;
 
+-- Call in-app service endpoint to get list of graphs
+CREATE OR REPLACE PROCEDURE app_public.list_graphs()
+        RETURNS STRING
+        LANGUAGE PYTHON
+		RUNTIME_VERSION = '3.10'
+		PACKAGES = ('requests')
+		HANDLER = 'run'
+AS
+$$
+import requests
+
+def run(session):
+    url = 'http://falkordb-server:8000/list_graphs'
+    response = requests.get(url, headers={'accept': 'application/json'})
+    response.raise_for_status()
+    return response.text
+$$;
+
+GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_user;
+
