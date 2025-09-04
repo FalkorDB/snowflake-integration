@@ -45,8 +45,9 @@ CREATE OR REPLACE PROCEDURE app_public.toUpper(s STRING)
         LANGUAGE JAVASCRIPT
 AS
 $$
-    if (s === null || s === undefined) return null;
-    return String(s).toUpperCase();
+    var sArg = arguments[0];
+    if (sArg === null || sArg === undefined) return null;
+    return String(sArg).toUpperCase();
 $$;
 
 GRANT USAGE ON PROCEDURE app_public.toUpper(STRING) TO APPLICATION ROLE app_user;

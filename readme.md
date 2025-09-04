@@ -16,6 +16,14 @@ run `./scripts/instansiate.sh`
 
 run `./scripts/uninstantiate.sh`
 
+## View container logs
+
+run `./scripts/logs.sh`
+
 ## Call a procedure
 
-TBD
+```shell
+curl -X 'GET' \
+  'http://localhost:8080/list_graphs' \
+  -H 'accept: application/json'
+```
