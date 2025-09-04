@@ -22,6 +22,28 @@ BEGIN
     GRANT USAGE ON SERVICE app_public.st_spcs TO APPLICATION ROLE app_admin;
     GRANT SERVICE ROLE app_public.st_spcs!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_admin;
 
+    -- Create service function after service exists with specific path
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION app_public.list_graphs_raw(request OBJECT)
+        RETURNS VARIANT
+        SERVICE=app_public.st_spcs
+        ENDPOINT=''api''
+        MAX_BATCH_ROWS=1
+        AS ''/echo''';
+    
+    -- Create wrapper procedure for easier calling
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.list_graphs()
+        RETURNS VARIANT
+        LANGUAGE SQL
+        AS
+        ''BEGIN
+            RETURN app_public.list_graphs_raw({''''test'''': ''''snowflake_service_function''''});
+        END''';
+    
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.list_graphs_raw(OBJECT) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.list_graphs_raw(OBJECT) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_user';
+
 RETURN 'Service started. Check status, and when ready, get URL';
 END;
 $$;
@@ -60,8 +82,10 @@ CREATE OR REPLACE PROCEDURE app_public.get_service_status()
     EXECUTE AS OWNER
 AS
 $$
+DECLARE
+    service_name STRING DEFAULT 'app_public.st_spcs';
 BEGIN
-    RETURN SYSTEM$GET_SERVICE_STATUS('app_public.st_spcs');
+    RETURN SYSTEM$GET_SERVICE_STATUS(:service_name);
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.get_service_status() TO APPLICATION ROLE app_admin;
@@ -73,8 +97,10 @@ CREATE OR REPLACE PROCEDURE app_public.get_service_logs(instance_id STRING, cont
     EXECUTE AS OWNER
 AS
 $$
+DECLARE
+    service_name STRING DEFAULT 'app_public.st_spcs';
 BEGIN
-    RETURN SYSTEM$GET_SERVICE_LOGS('app_public.st_spcs', instance_id, container, lines);
+    RETURN SYSTEM$GET_SERVICE_LOGS(:service_name, instance_id, container, lines);
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.get_service_logs(STRING, STRING, INTEGER) TO APPLICATION ROLE app_admin;
@@ -87,8 +113,10 @@ CREATE OR REPLACE PROCEDURE app_public.get_service_containers()
     EXECUTE AS OWNER
 AS
 $$
+DECLARE
+    service_name STRING DEFAULT 'app_public.st_spcs';
 BEGIN
-    SHOW SERVICE CONTAINERS IN SERVICE app_public.st_spcs;
+    EXECUTE IMMEDIATE 'SHOW SERVICE CONTAINERS IN SERVICE ' || :service_name;
     RETURN (
         SELECT ARRAY_AGG(OBJECT_CONSTRUCT(*))
         FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
@@ -97,25 +125,4 @@ END
 $$;
 GRANT USAGE ON PROCEDURE app_public.get_service_containers() TO APPLICATION ROLE app_admin;
 GRANT USAGE ON PROCEDURE app_public.get_service_containers() TO APPLICATION ROLE app_user;
-
--- Call in-app service endpoint to get list of graphs
-CREATE OR REPLACE PROCEDURE app_public.list_graphs()
-        RETURNS STRING
-        LANGUAGE PYTHON
-		RUNTIME_VERSION = '3.10'
-		PACKAGES = ('requests')
-		HANDLER = 'run'
-AS
-$$
-import requests
-
-def run(session):
-    url = 'http://falkordb-server:8000/list_graphs'
-    response = requests.get(url, headers={'accept': 'application/json'})
-    response.raise_for_status()
-    return response.text
-$$;
-
-GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_admin;
-GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_user;
 
