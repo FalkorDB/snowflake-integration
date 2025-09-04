@@ -1,0 +1,21 @@
+spec:
+  containers:
+    - name: falkordb-server
+      image: /falkordb_app/napp/img_repo/falkordb_server
+      resources:
+        requests:
+          cpu: 0.5
+          memory: 512M
+        limits:
+          cpu: 1.0
+          memory: 1G
+  endpoints:
+    - name: api
+      port: 8000
+      public: false
+    - name: falkordb
+      port: 6379
+      public: false
+    - name: falkordb-browser
+      port: 3000
+      public: false
