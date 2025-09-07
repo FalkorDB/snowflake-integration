@@ -26,7 +26,7 @@ docker login "$repository_url" || {
 	exit 1
 }
 
-FALKORDB_IMAGE="text-to-cypher:v0.1.5-beta.12"   # source image to pull
+FALKORDB_IMAGE="text-to-cypher:v0.1.5-beta.14"   # source image to pull
 TARGET_IMAGE_NAME="falkordb_server"              # image name expected by falkordb.yml
 TARGET_TAG="latest"                              # falkordb.yml has no tag -> defaults to 'latest'
 

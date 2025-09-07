@@ -19,6 +19,12 @@ snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL a
 # directly call the service function to load CSV data
 snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.load_csv_raw({'csv_data': 'Lee Pace,1979\nVin Diesel,1967\nChris Pratt,1979\nZoe Saldana,1978',  'cypher_query': 'LOAD CSV FROM ''file://actors.csv'' AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year', 'graph_name': 'social'});"
 
+# call the procedure to run graph query using wrapper
+snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.graph_query('social', 'MATCH (n) RETURN n');"
+
+# directly call the service function to run graph query
+snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.graph_query_raw({'graph_name': 'social', 'query': 'MATCH (n) RETURN n'});"
+
 
 
 curl -X POST \
@@ -38,6 +44,19 @@ curl -X POST \
   }' \
   http://localhost:8080/load_csv
 
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "User-Agent: Snowflake" \
+  -d '{
+    "data": [
+      [
+        0,
+        {
+          "graph_name": "social",
+          "query": "MATCH (n) RETURN n"
+        }
+      ]
+    ]
+  }' \
+  http://localhost:8080/graph_query
 
-"GRAPH.QUERY" "social" "LOAD CSV FROM file://d3df13f8-da49-45dc-aba6-3990beb77b35.csv AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year" "--compact"
-"GRAPH.QUERY" "social" "LOAD CSV FROM file://actors.csv                               AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year"
