@@ -44,6 +44,27 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_user';
 
+    -- Create load_csv service function 
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION app_public.load_csv_raw(request OBJECT)
+        RETURNS VARIANT
+        SERVICE=app_public.st_spcs
+        ENDPOINT=''api''
+        AS ''/load_csv''';
+    
+    -- Create wrapper procedure for load_csv
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(csv_data VARCHAR, cypher_query VARCHAR, graph_name VARCHAR)
+        RETURNS VARIANT
+        LANGUAGE SQL
+        AS
+        ''BEGIN
+            RETURN app_public.load_csv_raw({''''csv_data'''': :csv_data, ''''cypher_query'''': :cypher_query, ''''graph_name'''': :graph_name});
+        END''';
+    
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.load_csv_raw(OBJECT) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.load_csv_raw(OBJECT) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+
 RETURN 'Service started. Check status, and when ready, get URL';
 END;
 $$;
