@@ -86,6 +86,48 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_query(VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_query(VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
 
+    -- Create graph_list service function 
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION app_public.graph_list_raw(request OBJECT)
+        RETURNS STRING
+        SERVICE=app_public.st_spcs
+        ENDPOINT=''api''
+        AS ''/graph_list''';
+    
+    -- Create wrapper procedure for graph_list
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.graph_list()
+        RETURNS STRING
+        LANGUAGE SQL
+        AS
+        ''BEGIN
+            RETURN app_public.graph_list_raw({});
+        END''';
+    
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.graph_list_raw(OBJECT) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.graph_list_raw(OBJECT) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_list() TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_list() TO APPLICATION ROLE app_user';
+
+    -- Create graph_delete service function 
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION app_public.graph_delete_raw(request OBJECT)
+        RETURNS STRING
+        SERVICE=app_public.st_spcs
+        ENDPOINT=''api''
+        AS ''/graph_delete''';
+    
+    -- Create wrapper procedure for graph_delete
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.graph_delete(graph_name VARCHAR)
+        RETURNS STRING
+        LANGUAGE SQL
+        AS
+        ''BEGIN
+            RETURN app_public.graph_delete_raw({''''graph_name'''': :graph_name});
+        END''';
+    
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.graph_delete_raw(OBJECT) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.graph_delete_raw(OBJECT) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_delete(VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_delete(VARCHAR) TO APPLICATION ROLE app_user';
+
 RETURN 'Service started. Check status, and when ready, get URL';
 END;
 $$;

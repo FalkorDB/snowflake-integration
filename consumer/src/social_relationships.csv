@@ -1,0 +1,16 @@
+from_name,to_name,relationship_type
+Alice,Bob,FRIEND
+Bob,Carol,FRIEND
+Carol,David,FRIEND
+David,Eve,FRIEND
+Eve,Frank,FRIEND
+Frank,Grace,FRIEND
+Grace,Heidi,FRIEND
+Heidi,Ivan,FRIEND
+Ivan,Judy,FRIEND
+Judy,Alice,FRIEND
+Alice,Eve,FRIEND
+Bob,Frank,FRIEND
+Carol,Grace,FRIEND
+David,Heidi,FRIEND
+Eve,Ivan,FRIEND

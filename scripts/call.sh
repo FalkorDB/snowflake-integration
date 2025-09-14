@@ -25,6 +25,18 @@ snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL a
 # directly call the service function to run graph query
 snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.graph_query_raw({'graph_name': 'social', 'query': 'MATCH (n) RETURN n'});"
 
+# call the procedure to list graphs using wrapper
+snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.graph_list();"
+
+# directly call the service function to list graphs
+snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.graph_list_raw({});"
+
+# call the procedure to delete graph using wrapper
+snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.graph_delete('test_graph');"
+
+# directly call the service function to delete graph
+snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.graph_delete_raw({'graph_name': 'test_graph'});"
+
 
 
 curl -X POST \

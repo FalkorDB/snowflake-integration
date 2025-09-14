@@ -21,12 +21,28 @@ fi
 
 # Log in to Docker registry first
 echo "🔐 Logging into Docker registry..."
-docker login "$repository_url" || {
-	echo "❌ Docker login failed. Please check your Snowflake credentials."
+
+# Extract registry host from repository URL
+registry_host=$(echo "$repository_url" | sed 's|/.*||')
+
+# Get fresh authentication token
+echo "Getting fresh authentication token..."
+token_output=$(snow sql --format JSON -q "use role falkordb_role; SELECT SYSTEM\$REGISTRY_TOKEN('FALKORDB_APP');" 2>/dev/null)
+token=$(echo "$token_output" | jq -r '.[1][0]["SYSTEM$REGISTRY_TOKEN('"'"'FALKORDB_APP'"'"')"] // empty' 2>/dev/null)
+
+if [ -z "$token" ]; then
+    echo "❌ Failed to get authentication token from Snowflake"
+    echo "Token output: $token_output"
+    exit 1
+fi
+
+# Login with token
+echo "$token" | docker login "$registry_host" -u barak --password-stdin || {
+	echo "❌ Docker login failed with fresh token. Please check your Snowflake credentials."
 	exit 1
 }
 
-FALKORDB_IMAGE="text-to-cypher:v0.1.5-beta.14"   # source image to pull
+FALKORDB_IMAGE="text-to-cypher:v0.1.5-beta.15"   # source image to pull
 TARGET_IMAGE_NAME="falkordb_server"              # image name expected by falkordb.yml
 TARGET_TAG="latest"                              # falkordb.yml has no tag -> defaults to 'latest'
 
