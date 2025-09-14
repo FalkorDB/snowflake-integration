@@ -19,28 +19,32 @@ else
     exit 1
 fi
 
-# Log in to Docker registry first
-echo "🔐 Logging into Docker registry..."
+# Log in to Docker registry using local token file
+echo "🔐 Logging into Docker registry using local token..."
 
 # Extract registry host from repository URL
 registry_host=$(echo "$repository_url" | sed 's|/.*||')
 
-# Get fresh authentication token
-echo "Getting fresh authentication token..."
-token_output=$(snow sql --format JSON -q "use role falkordb_role; SELECT SYSTEM\$REGISTRY_TOKEN('FALKORDB_APP');" 2>/dev/null)
-token=$(echo "$token_output" | jq -r '.[1][0]["SYSTEM$REGISTRY_TOKEN('"'"'FALKORDB_APP'"'"')"] // empty' 2>/dev/null)
-
-if [ -z "$token" ]; then
-    echo "❌ Failed to get authentication token from Snowflake"
-    echo "Token output: $token_output"
+# Read token from local file
+if [ ! -f "token" ]; then
+    echo "❌ Token file not found. Please ensure 'token' file exists in the project root."
     exit 1
 fi
 
-# Login with token
+token=$(head -n 1 token)
+
+if [ -z "$token" ]; then
+    echo "❌ Token file is empty or invalid."
+    exit 1
+fi
+
+# Login with token from file
 echo "$token" | docker login "$registry_host" -u barak --password-stdin || {
-	echo "❌ Docker login failed with fresh token. Please check your Snowflake credentials."
+	echo "❌ Docker login failed with token from file. Please check your token and credentials."
 	exit 1
 }
+
+echo "✅ Successfully logged into Docker registry!"
 
 FALKORDB_IMAGE="text-to-cypher:v0.1.5-beta.15"   # source image to pull
 TARGET_IMAGE_NAME="falkordb_server"              # image name expected by falkordb.yml
