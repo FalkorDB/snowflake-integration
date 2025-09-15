@@ -3,6 +3,12 @@ CREATE APPLICATION ROLE app_user;
 CREATE SCHEMA IF NOT EXISTS app_public;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_user;
+
+-- Create staging area for CSV exports
+CREATE STAGE IF NOT EXISTS app_public.staging;
+GRANT READ, WRITE ON STAGE app_public.staging TO APPLICATION ROLE app_admin;
+GRANT READ, WRITE ON STAGE app_public.staging TO APPLICATION ROLE app_user;
+
 CREATE OR ALTER VERSIONED SCHEMA v1;
 GRANT USAGE ON SCHEMA v1 TO APPLICATION ROLE app_admin;
 
@@ -50,13 +56,19 @@ BEGIN
         ENDPOINT=''api''
         AS ''/load_csv''';
     
-    -- Create wrapper procedure for load_csv
-    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(graph_name VARCHAR, csv_data VARCHAR, cypher_query VARCHAR)
+    -- Create wrapper procedure for load_csv, load the data from consumer_table as csv file named consumer_table.csv to in the staging area and then call load_csv_raw  
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(graph_name VARCHAR, consumer_table VARCHAR, cypher_query VARCHAR)
         RETURNS VARIANT
         LANGUAGE SQL
         AS
         ''BEGIN
-            RETURN app_public.load_csv_raw({''''graph_name'''': :graph_name, ''''csv_data'''': :csv_data, ''''cypher_query'''': :cypher_query});
+            -- Export data from consumer_table to CSV file in staging area
+            EXECUTE IMMEDIATE ''''COPY INTO @app_public.staging/'''' || :consumer_table || ''''.csv 
+                FROM (SELECT * FROM '''' || :consumer_table || '''') 
+                FILE_FORMAT = (TYPE = CSV)'''';
+            
+            -- Call load_csv_raw with the CSV file path
+            RETURN app_public.load_csv_raw({''''graph_name'''': :graph_name, ''''csv_file'''': :consumer_table || ''''.csv'''', ''''cypher_query'''': :cypher_query});
         END''';
     
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.load_csv_raw(OBJECT) TO APPLICATION ROLE app_admin';

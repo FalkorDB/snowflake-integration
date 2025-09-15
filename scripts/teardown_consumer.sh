@@ -18,8 +18,9 @@ snow sql -q "
 -- Use ACCOUNTADMIN to ensure we have sufficient privileges
 USE ROLE ACCOUNTADMIN;
 
--- Drop consumer database and all its contents
+-- Drop consumer databases (both possible names) and all their contents
 DROP DATABASE IF EXISTS consumer_data CASCADE;
+DROP DATABASE IF EXISTS consumer_db CASCADE;
 
 -- Drop the warehouses
 DROP WAREHOUSE IF EXISTS wh_consumer;

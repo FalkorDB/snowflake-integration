@@ -4,7 +4,7 @@ spec:
       image: /falkordb_app/napp/img_repo/falkordb_server
       volumeMounts:
         - name: shared-staging
-          mountPath: /app/staging
+          mountPath: /var/lib/FalkorDB/import
       resources:
         requests:
           cpu: 0.5

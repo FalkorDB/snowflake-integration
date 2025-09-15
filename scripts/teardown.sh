@@ -4,7 +4,7 @@
 # This script runs all teardown steps in the correct order
 # Usage: ./teardown.sh
 
-set -e
+# Note: Removed 'set -e' to continue even if individual steps fail during cleanup
 
 SCRIPT_DIR="$(dirname "$0")"
 

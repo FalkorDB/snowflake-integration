@@ -1,7 +1,8 @@
 -- Teardown of resources created by instantiate.sql
 -- Idempotent: safe to run multiple times
 
-use role consumer_role;
+-- Use ACCOUNTADMIN to ensure we have sufficient privileges for cleanup
+use role accountadmin;
 
 -- Drop the application instance (stops services and removes app-scoped grants)
 drop application if exists falkordb_app_instance;
