@@ -2,6 +2,9 @@ spec:
   containers:
     - name: falkordb-server
       image: /falkordb_app/napp/img_repo/falkordb_server
+      volumeMounts:
+        - name: shared-staging
+          mountPath: /app/staging
       resources:
         requests:
           cpu: 0.5
@@ -9,6 +12,9 @@ spec:
         limits:
           cpu: 1.0
           memory: 1G
+  volumes:
+    - name: shared-staging
+      source: "@consumer_data.social_network.app_shared_stage"
   endpoints:
     - name: api
       port: 8080

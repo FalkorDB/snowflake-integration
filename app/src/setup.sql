@@ -21,7 +21,6 @@ BEGIN
     -- Also grant to app_admin for operational tasks
     GRANT USAGE ON SERVICE app_public.st_spcs TO APPLICATION ROLE app_admin;
     GRANT SERVICE ROLE app_public.st_spcs!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_admin;
-
     -- Create service function after service exists with specific path
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION app_public.list_graphs_raw(request OBJECT)
         RETURNS VARIANT

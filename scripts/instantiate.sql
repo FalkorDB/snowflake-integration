@@ -12,6 +12,3 @@ create  compute pool pool_consumer for application falkordb_app_instance
 grant usage on compute pool pool_consumer to application falkordb_app_instance;
 grant usage on warehouse wh_consumer to application falkordb_app_instance;
 grant bind service endpoint on account to application falkordb_app_instance;
-
-
-call falkordb_app_instance.app_public.start_app('POOL_CONSUMER', 'WH_CONSUMER');
