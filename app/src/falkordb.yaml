@@ -15,6 +15,8 @@ spec:
   volumes:
     - name: shared-staging
       source: "@consumer_data.social_network.app_shared_stage"
+      uid: 1000
+      gid: 1000
   endpoints:
     - name: api
       port: 8080

@@ -14,10 +14,10 @@ snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT
 
 
 # call the procedure to load CSV data using wrapper
-snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.load_csv('social', 'consumer_data.social_network.social_nodes','LOAD CSV FROM ''file://social_nodes.csv'' AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year');"
+snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.load_csv('social', 'consumer_data.social_network.social_nodes','LOAD CSV FROM ''file://consumer_data.social_network.social_nodes.csv'' AS row MERGE (a:Actor {name: row[0], node_label: row[1]}) RETURN a.name, a.node_label');"
 
 # directly call the service function to load CSV data
-snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.load_csv_raw({'graph_name': 'social', 'csv_data': 'Lee Pace,1979\nVin Diesel,1967\nChris Pratt,1979\nZoe Saldana,1978',  'cypher_query': 'LOAD CSV FROM ''file://actors.csv'' AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year'});"
+snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.load_csv_raw({'graph_name': 'social', 'csv_file': 'consumer_data.social_network.social_nodes.csv',  'cypher_query': 'LOAD CSV FROM ''file://consumer_data.social_network.social_nodes.csv'' AS row MERGE (a:Actor {name: row[0], node_label: row[1]}) RETURN a.name, a.node_label'});"
 
 # call the procedure to run graph query using wrapper
 snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.graph_query('social', 'MATCH (n) RETURN n');"
@@ -66,7 +66,7 @@ curl -X POST \
         {
           "graph_name": "social",
           "csv_file": "consumer_data.social_network.social_nodes.csv",
-          "cypher_query": "LOAD CSV FROM '\''file://social_nodes.csv'\'' AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year"
+          "cypher_query": "LOAD CSV FROM '\''file://consumer_data.social_network.social_nodes.csv'\'' AS row MERGE (a:Actor {name: row[0], node_label: row[1]}) RETURN a.name, a.node_label"
         }
       ]
     ]

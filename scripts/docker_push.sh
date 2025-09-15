@@ -46,7 +46,7 @@ echo "$token" | docker login "$registry_host" -u barak --password-stdin || {
 
 echo "✅ Successfully logged into Docker registry!"
 
-FALKORDB_IMAGE="text-to-cypher:v0.1.5-beta.15"   # source image to pull
+FALKORDB_IMAGE="text-to-cypher:v0.1.5-beta.16"   # source image to pull
 TARGET_IMAGE_NAME="falkordb_server"              # image name expected by falkordb.yml
 TARGET_TAG="latest"                              # falkordb.yml has no tag -> defaults to 'latest'
 

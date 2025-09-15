@@ -1,5 +1,7 @@
 CREATE APPLICATION ROLE app_admin;
 CREATE APPLICATION ROLE app_user;
+
+-- Create schema for the application
 CREATE SCHEMA IF NOT EXISTS app_public;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_user;
@@ -63,9 +65,10 @@ BEGIN
         AS
         ''BEGIN
             -- Export data from consumer_table to CSV file in staging area
-            EXECUTE IMMEDIATE ''''COPY INTO @app_public.staging/'''' || :consumer_table || ''''.csv 
+            EXECUTE IMMEDIATE ''''COPY INTO @consumer_data.social_network.app_shared_stage/'''' || :consumer_table || ''''.csv 
                 FROM (SELECT * FROM '''' || :consumer_table || '''') 
-                FILE_FORMAT = (TYPE = CSV)'''';
+                FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)
+                SINGLE = TRUE'''';
             
             -- Call load_csv_raw with the CSV file path
             RETURN app_public.load_csv_raw({''''graph_name'''': :graph_name, ''''csv_file'''': :consumer_table || ''''.csv'''', ''''cypher_query'''': :cypher_query});
