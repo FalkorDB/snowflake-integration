@@ -51,12 +51,12 @@ BEGIN
         AS ''/load_csv''';
     
     -- Create wrapper procedure for load_csv
-    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(csv_data VARCHAR, cypher_query VARCHAR, graph_name VARCHAR)
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(graph_name VARCHAR, csv_data VARCHAR, cypher_query VARCHAR)
         RETURNS VARIANT
         LANGUAGE SQL
         AS
         ''BEGIN
-            RETURN app_public.load_csv_raw({''''csv_data'''': :csv_data, ''''cypher_query'''': :cypher_query, ''''graph_name'''': :graph_name});
+            RETURN app_public.load_csv_raw({''''graph_name'''': :graph_name, ''''csv_data'''': :csv_data, ''''cypher_query'''': :cypher_query});
         END''';
     
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.load_csv_raw(OBJECT) TO APPLICATION ROLE app_admin';

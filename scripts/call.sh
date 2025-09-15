@@ -14,10 +14,10 @@ snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT
 
 
 # call the procedure to load CSV data using wrapper
-snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.load_csv('Lee Pace,1979\nVin Diesel,1967\nChris Pratt,1979\nZoe Saldana,1978','LOAD CSV FROM ''file://actors.csv'' AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year','social');"
+snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.load_csv('social', 'Lee Pace,1979\nVin Diesel,1967\nChris Pratt,1979\nZoe Saldana,1978','LOAD CSV FROM ''file://actors.csv'' AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year');"
 
 # directly call the service function to load CSV data
-snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.load_csv_raw({'csv_data': 'Lee Pace,1979\nVin Diesel,1967\nChris Pratt,1979\nZoe Saldana,1978',  'cypher_query': 'LOAD CSV FROM ''file://actors.csv'' AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year', 'graph_name': 'social'});"
+snow sql -q "USE ROLE consumer_role; USE DATABASE FALKORDB_APP_INSTANCE;  SELECT app_public.load_csv_raw({'graph_name': 'social', 'csv_data': 'Lee Pace,1979\nVin Diesel,1967\nChris Pratt,1979\nZoe Saldana,1978',  'cypher_query': 'LOAD CSV FROM ''file://actors.csv'' AS row MERGE (a:Actor {name: row[0], birth_year: toInteger(row[1])}) RETURN a.name, a.birth_year'});"
 
 # call the procedure to run graph query using wrapper
 snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.graph_query('social', 'MATCH (n) RETURN n');"
