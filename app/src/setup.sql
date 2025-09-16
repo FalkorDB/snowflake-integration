@@ -61,18 +61,45 @@ BEGIN
     -- Create wrapper procedure for load_csv, load the data from consumer_table as csv file named consumer_table.csv to in the staging area and then call load_csv_raw  
     EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(graph_name VARCHAR, consumer_table VARCHAR, cypher_query VARCHAR)
         RETURNS VARIANT
-        LANGUAGE SQL
+        LANGUAGE JAVASCRIPT
         AS
-        ''BEGIN
-            -- Export data from consumer_table to CSV file in staging area
-            EXECUTE IMMEDIATE ''''COPY INTO @consumer_data.social_network.app_shared_stage/'''' || :consumer_table || ''''.csv 
-                FROM (SELECT * FROM '''' || :consumer_table || '''') 
-                FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)
-                SINGLE = TRUE'''';
+        ''
+        var randomId = Math.abs(Math.floor(Math.random() * 1000000));
+        var csvFilename = CONSUMER_TABLE + "_" + randomId + ".csv";
+        
+        // Export data to CSV
+        var copyQuery = "COPY INTO @consumer_data.social_network.app_shared_stage/" + csvFilename + 
+                       " FROM (SELECT * FROM " + CONSUMER_TABLE + ")" +
+                       " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)" +
+                       " SINGLE = TRUE";
+        snowflake.execute({sqlText: copyQuery});
+        
+        try {
+            // Call load_csv_raw
+            var result = snowflake.execute({
+                sqlText: "SELECT app_public.load_csv_raw({''''graph_name'''': ?, ''''csv_file'''': ?, ''''cypher_query'''': ?})",
+                binds: [GRAPH_NAME, csvFilename, CYPHER_QUERY]
+            });
             
-            -- Call load_csv_raw with the CSV file path
-            RETURN app_public.load_csv_raw({''''graph_name'''': :graph_name, ''''csv_file'''': :consumer_table || ''''.csv'''', ''''cypher_query'''': :cypher_query});
-        END''';
+            // Clean up CSV file
+            snowflake.execute({
+                sqlText: "REMOVE @consumer_data.social_network.app_shared_stage/" + csvFilename
+            });
+            
+            return result.next() ? result.getColumnValue(1) : null;
+        } catch (err) {
+            // Clean up on error
+            try {
+                snowflake.execute({
+                    sqlText: "REMOVE @consumer_data.social_network.app_shared_stage/" + csvFilename
+                });
+            } catch (cleanupErr) {
+                // Ignore cleanup errors
+            }
+            throw err;
+        }
+        ''';
+
     
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.load_csv_raw(OBJECT) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.load_csv_raw(OBJECT) TO APPLICATION ROLE app_user';
