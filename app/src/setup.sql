@@ -29,27 +29,7 @@ BEGIN
     -- Also grant to app_admin for operational tasks
     GRANT USAGE ON SERVICE app_public.st_spcs TO APPLICATION ROLE app_admin;
     GRANT SERVICE ROLE app_public.st_spcs!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_admin;
-    -- Create service function after service exists with specific path
-    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION app_public.list_graphs_raw(request OBJECT)
-        RETURNS VARIANT
-        SERVICE=app_public.st_spcs
-        ENDPOINT=''api''
-        MAX_BATCH_ROWS=1
-        AS ''/echo''';
-    
-    -- Create wrapper procedure for easier calling
-    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.list_graphs()
-        RETURNS VARIANT
-        LANGUAGE SQL
-        AS
-        ''BEGIN
-            RETURN app_public.list_graphs_raw({''''test'''': ''''snowflake_service_function''''});
-        END''';
-    
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.list_graphs_raw(OBJECT) TO APPLICATION ROLE app_admin';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.list_graphs_raw(OBJECT) TO APPLICATION ROLE app_user';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_admin';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.list_graphs() TO APPLICATION ROLE app_user';
+   
 
     -- Create load_csv service function 
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION app_public.load_csv_raw(request OBJECT)
@@ -184,21 +164,6 @@ BEGIN
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.stop_app() TO APPLICATION ROLE app_admin;
-
-
--- Simple utility procedure as part of the app
-CREATE OR REPLACE PROCEDURE app_public.toUpper(s STRING)
-        RETURNS STRING
-        LANGUAGE JAVASCRIPT
-AS
-$$
-    var sArg = arguments[0];
-    if (sArg === null || sArg === undefined) return null;
-    return String(sArg).toUpperCase();
-$$;
-
-GRANT USAGE ON PROCEDURE app_public.toUpper(STRING) TO APPLICATION ROLE app_user;
-GRANT USAGE ON PROCEDURE app_public.toUpper(STRING) TO APPLICATION ROLE app_admin;
 
 -- Helpers to fetch service status and logs without requiring external application role switching
 CREATE OR REPLACE PROCEDURE app_public.get_service_status()

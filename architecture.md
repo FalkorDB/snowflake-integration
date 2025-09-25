@@ -1,6 +1,6 @@
 # This app simulate
 
-1. User (consumer) of snowflake that has 3 tables with data taken from consumer/src
+1. User (consumer) of snowflake that has 2 tables with data taken from consumer/src
 2. falkordb app published into snowflake marketpalce with staging folder that can accept data from consumer
 3. Consumer deploy instance of falkordb app and setup his staging
 4. Consumer call falkordb app procedure load_csv(graph, table, chypher_query) that
