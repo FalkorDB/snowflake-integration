@@ -38,10 +38,10 @@ For further technical details, see the [`app/src/setup.sql`](https://github.com/
 App logic and procedures are defined in [`app/src/setup.sql`](https://github.com/FalkorDB/snowflake-integration/blob/main/app/src/setup.sql). Key procedures include:
 
 - `start_app(poolname, whname)` – Initializes the service and resources
-- `load_csv(graph_name, table, cypher_query)` – Loads table data to FalkorDB and executes Cypher queries
-- `graph_query(graph_name, query)` – Executes Cypher queries
-- `graph_list()` – Lists all graphs
-- `graph_delete(graph_name)` – Deletes a graph
+- `load_csv(graph_name, table, cypher_query)` – Loads table data to FalkorDB, the way that it is work is first the table name export to the staging aria as a uniq CSV file, the file is mounted on the data directory of the container where the falkordb is running, next the falkordb [loadcsv](https://docs.falkordb.com/cypher/load-csv.html) is executed with this file table and the cypher_query that glue the values from the CSV into the graph, and last the CSV file is deleted. for example: `snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.load_csv('social', 'consumer_data.social_network.social_nodes','LOAD CSV FROM ''file://nodes.csv'' AS row MERGE (a:Actor {name: row[0], node_label: row[1]}) RETURN a.name, a.node_label');"`
+- `graph_query(graph_name, query)` – Executes Cypher queries, graph_name is the graph name and query is a cypher query, for example: `snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.graph_query('social', 'MATCH (n) RETURN n');"`
+- `graph_list()` – Lists all existing graphs, for example: `snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.graph_list();"`
+- `graph_delete(graph_name)` – Deletes a graph, for example: `snow sql -q "use role consumer_role; use database FALKORDB_APP_INSTANCE;  CALL app_public.graph_delete('test_graph');"`
 - `get_service_status()`, `get_service_logs(...)`, `get_service_containers()` – Admin helpers
 
 All logic is handled **inside the package** for full auditability.
