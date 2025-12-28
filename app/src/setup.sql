@@ -20,10 +20,28 @@ CREATE OR REPLACE PROCEDURE app_public.start_app(poolname VARCHAR, whname VARCHA
     LANGUAGE sql
     AS $$
 BEGIN
+        -- Create compute pool if it doesn't exist
+        EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) 
+            MIN_NODES = 1 
+            MAX_NODES = 1
+            INSTANCE_FAMILY = CPU_X64_S
+            AUTO_RESUME = TRUE'
+            USING (poolname);
+        
+        -- Create warehouse if it doesn't exist
+        EXECUTE IMMEDIATE 'CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER(?)
+            WITH WAREHOUSE_SIZE = ''XSMALL''
+            INITIALLY_SUSPENDED = TRUE
+            AUTO_SUSPEND = 300
+            AUTO_RESUME = TRUE'
+            USING (whname);
+        
+        -- Create the service
         EXECUTE IMMEDIATE 'CREATE SERVICE IF NOT EXISTS app_public.st_spcs
-            IN COMPUTE POOL Identifier(''' || poolname || ''')
-            FROM SPECIFICATION_FILE=''' || '/falkordb.yaml' || '''
-            QUERY_WAREHOUSE=''' || whname || '''';
+            IN COMPUTE POOL IDENTIFIER(?)
+            FROM SPECIFICATION_FILE = ''/falkordb.yaml''
+            QUERY_WAREHOUSE = IDENTIFIER(?)'
+            USING (poolname, whname);
     GRANT USAGE ON SERVICE app_public.st_spcs TO APPLICATION ROLE app_user;
     GRANT SERVICE ROLE app_public.st_spcs!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
     -- Also grant to app_admin for operational tasks
