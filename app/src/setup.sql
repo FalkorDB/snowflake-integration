@@ -31,6 +31,7 @@ BEGIN
         -- Create warehouse if it doesn't exist
         EXECUTE IMMEDIATE 'CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER(?)
             WITH WAREHOUSE_SIZE = ''XSMALL''
+            INITIALLY_SUSPENDED = TRUE
             AUTO_SUSPEND = 300
             AUTO_RESUME = TRUE'
             USING (whname);
