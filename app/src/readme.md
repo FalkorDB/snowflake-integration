@@ -60,7 +60,9 @@ After installation, initialize the FalkorDB service by calling the `start_app()`
 CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
 ```
 
-**Note**: Replace `<app_instance_name>` with the name you chose during installation.
+**Important**: Replace `<app_instance_name>` with the name you chose during installation.
+
+**Note**: After `start_app()` completes, the graph database procedures (`load_csv()`, `graph_query()`, `graph_list()`, `graph_delete()`) will be created and ready to use. These procedures depend on the FalkorDB service being running.
 
 ### Step 3: Load Your Data
 
