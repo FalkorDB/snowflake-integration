@@ -4,8 +4,8 @@ manifest_version: 1
 version:
   name: V2
   label: "Version Two"
-  comment: "Added auto resource creation and Permission SDK for table access"
-  patch: 10
+  comment: "Added graceful Permission SDK fallback for regional compatibility"
+  patch: 11
 
 
 #artifacts that are distributed from this version of the package
