@@ -2,9 +2,10 @@
 manifest_version: 1
 
 version:
-  name: V1
-  label: "Version One"
-  comment: "The first version of our Native Application that includes SPCS"
+  name: V2
+  label: "Version Two"
+  comment: "Added auto resource creation and Permission SDK for table access"
+  patch: 10
 
 
 #artifacts that are distributed from this version of the package
@@ -13,13 +14,13 @@ artifacts:
   setup_script: setup.sql
   container_services:
     images:
-      - /falkordb_app/napp/img_repo/falkordb_server
+      - /falkordb_app/napp/img_repo/falkordb_server:latest
 
 privileges:
- - CREATE COMPUTE POOL:
-      description: "Enable application to create its own compute pool(s)"
  - BIND SERVICE ENDPOINT:
       description: "Enables application to expose service endpoints"
+ - CREATE COMPUTE POOL:
+      description: "Allows application to create compute pools for running services"
  - CREATE WAREHOUSE:
-      description: "Enables application to create its own warehouse(s)"
+      description: "Allows application to create warehouses for query processing"
   
