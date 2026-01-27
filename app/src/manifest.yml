@@ -4,8 +4,8 @@ manifest_version: 1
 version:
   name: V2
   label: "Version Two"
-  comment: "Added graceful Permission SDK fallback for regional compatibility"
-  patch: 11
+  comment: "Implement reference binding for table selection via Permissions UI"
+  patch: 17
 
 
 #artifacts that are distributed from this version of the package
@@ -23,4 +23,14 @@ privileges:
       description: "Allows application to create compute pools for running services"
  - CREATE WAREHOUSE:
       description: "Allows application to create warehouses for query processing"
+
+references:
+  - consumer_data_table:
+      label: "Consumer Data Table"
+      description: "Table containing social graph data (name, node_label columns)"
+      privileges:
+        - SELECT
+      object_type: TABLE
+      multi_valued: false
+      register_callback: app_public.register_callback
   

@@ -51,7 +51,20 @@ Before installing this app, ensure you have:
    - `CREATE WAREHOUSE`: Allows the app to create warehouses automatically
 4. Complete the installation process
 
-### Step 2: Initialize the Application
+### Step 2: Bind Your Data Table
+
+After installation, bind a table from your account to the application:
+
+1. Navigate to **Data Products** → **Apps** in Snowsight
+2. Click on your installed FalkorDB app instance
+3. Go to the **Permissions** tab
+4. Under **Object access privileges**, find **Consumer Data Table**
+5. Click **Select Data** and choose the table containing your graph data
+6. Grant SELECT privilege when prompted
+
+The table you bind will be used by the `load_csv` procedure to import data into graph structures.
+
+### Step 3: Initialize the Application
 
 The app will automatically create the required compute pool and warehouse when you start it:
 
@@ -86,47 +99,33 @@ CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
 
 **Important**: Replace `<app_instance_name>` with the name you chose during installation.
 
-### Step 3: Grant Table Access
+### Step 4: Verify Table Binding (Optional)
 
-Before loading data from your tables, grant the application access:
-
-### Step 3: Grant Table Access
-
-Before loading data from your tables, grant the application access:
-
-**Option A: Automatic (Recommended, if available in your region)**
-
-When you call `load_csv()`, the app will automatically request table access via a UI popup. Simply click "Allow" when prompted.
-
-**Option B: Manual (Required in some regions)**
-
-If automatic grant requests are not available, grant access manually:
+You can verify the table binding at any time:
 
 ```sql
--- Grant database and schema access
-GRANT USAGE ON DATABASE <your_database> TO APPLICATION <app_instance_name>;
-GRANT USAGE ON SCHEMA <your_database>.<your_schema> TO APPLICATION <app_instance_name>;
-
--- Grant table access
-GRANT SELECT ON TABLE <your_database>.<your_schema>.<your_table> TO APPLICATION <app_instance_name>;
+CALL <app_instance_name>.app_public.check_bound_table();
 ```
 
-**Note**: The automatic UI popup feature (Permission SDK) is available in most regions but not all. If you encounter errors about missing permissions, use the manual grant method above.
+To change the bound table, return to the **Permissions** tab in the app UI.
 
-### Step 4: Load Your Data
+### Step 5: Load Your Data
 
-Import data from your Snowflake tables into a graph structure:
+Import data from your bound table into a graph structure:
 
 ```sql
--- Example: Create a social network graph from a Snowflake table
+-- Example: Create a social network graph from your bound table
 CALL <app_instance_name>.app_public.load_csv(
-    'social_network',                          -- Graph name
-    'my_database.my_schema.users_table',      -- Source table
-    'CREATE (:Person {id: $id, name: $name})' -- Cypher mapping
+    'social_network',
+    'LOAD CSV FROM ''file://consumer_data.csv'' AS row CREATE (:Person {id: row[0], name: row[1]})'
 );
 ```
 
-### Step 5: Query Your Graph
+**Note**:
+- The table is automatically retrieved from your Config UI binding—no need to specify it as a parameter
+- The Cypher query must include `LOAD CSV FROM 'file://...' AS row` to access the CSV data via `row[0]`, `row[1]`, etc.
+
+### Step 6: Query Your Graph
 
 Execute Cypher queries to analyze relationships and patterns:
 
@@ -186,12 +185,12 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 - If resources already exist, uses them instead of creating new ones
 - Example: `CALL app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');`
 
-**`load_csv(graph_name VARCHAR, table_name VARCHAR, cypher_query VARCHAR)`**
-- Imports data from a Snowflake table into a graph structure
-- Attempts automatic table access request (UI popup) if Permission SDK is available
-- If automatic grants unavailable, you must manually grant SELECT on the table first
+**`load_csv(graph_name VARCHAR, cypher_query VARCHAR)`**
+- Imports data from your bound table (configured during installation) into a graph structure
+- Uses the table reference you selected in the Config UI
 - Automatically stages data, loads it into FalkorDB, and cleans up temporary files
-- Example: `CALL app_public.load_csv('my_graph', 'schema.table', 'CREATE (:Node {prop: $column})');`
+- Example: `CALL app_public.load_csv('my_graph', 'LOAD CSV FROM ''file://consumer_data.csv'' AS row CREATE (:Node {prop: row[0]})');`
+- **Note**: The Cypher query must include `LOAD CSV FROM 'file://...' AS row` clause to access CSV columns via `row[0]`, `row[1]`, etc.
 
 **`graph_list()`**
 - Returns a list of all graphs created in your FalkorDB instance
@@ -215,6 +214,11 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 - Example: `CALL app_public.graph_query('my_graph', 'MATCH (n) RETURN n LIMIT 10');`
 
 ### Administrative Functions
+
+**`check_bound_table()`**
+- Verifies that a table reference is properly bound to the application
+- Returns success message if bound, error message if not
+- Example: `CALL app_public.check_bound_table();`
 
 **`get_service_status()`**
 - Returns the current status of the FalkorDB service

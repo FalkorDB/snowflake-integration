@@ -6,6 +6,73 @@ CREATE SCHEMA IF NOT EXISTS app_public;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_user;
 
+-- Register callback for reference binding
+CREATE OR REPLACE PROCEDURE app_public.register_callback(ref_name STRING, operation STRING, ref_or_alias STRING)
+RETURNS STRING
+LANGUAGE SQL
+AS $$
+BEGIN
+  CASE (operation)
+    WHEN 'ADD' THEN
+      -- Bind the reference using SYSTEM$SET_REFERENCE
+      CALL SYSTEM$SET_REFERENCE(:ref_name, :ref_or_alias);
+    WHEN 'REMOVE' THEN
+      -- Remove the reference binding
+      CALL SYSTEM$REMOVE_REFERENCE(:ref_name, :ref_or_alias);
+    WHEN 'CLEAR' THEN
+      -- Clear all bindings for this reference
+      CALL SYSTEM$REMOVE_ALL_REFERENCES(:ref_name);
+    ELSE
+      RETURN 'ERROR: Unknown operation: ' || operation;
+  END CASE;
+  RETURN 'Success';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'ERROR: ' || SQLERRM;
+END;
+$$;
+GRANT USAGE ON PROCEDURE app_public.register_callback(STRING, STRING, STRING) TO APPLICATION ROLE app_admin;
+
+-- Helper procedure to check if table reference is bound
+CREATE OR REPLACE PROCEDURE app_public.check_bound_table()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS $$
+BEGIN
+  -- Try to describe the reference to check if it's bound
+  BEGIN
+    DESCRIBE TABLE reference('consumer_data_table');
+    RETURN 'Reference IS bound and accessible';
+  EXCEPTION
+    WHEN OTHER THEN
+      RETURN 'Reference NOT bound or error: ' || SQLERRM;
+  END;
+END;
+$$;
+GRANT USAGE ON PROCEDURE app_public.check_bound_table() TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.check_bound_table() TO APPLICATION ROLE app_user;
+
+-- Helper procedure to copy bound table data to stage
+CREATE OR REPLACE PROCEDURE app_public.copy_bound_table_to_stage(csv_filename VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS $$
+BEGIN
+  -- Copy data directly from the reference (no need to query alias)
+  EXECUTE IMMEDIATE 'COPY INTO @app_public.staging/' || :csv_filename ||
+                    ' FROM reference(''consumer_data_table'')' ||
+                    ' FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE';
+  RETURN 'Success';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'ERROR: Failed to copy data - ' || SQLERRM || '. Ensure table is bound via Apps → Permissions → Consumer Data Table';
+END;
+$$;
+GRANT USAGE ON PROCEDURE app_public.copy_bound_table_to_stage(VARCHAR) TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.copy_bound_table_to_stage(VARCHAR) TO APPLICATION ROLE app_user;
+
 -- Create staging area for CSV exports
 CREATE STAGE IF NOT EXISTS app_public.staging;
 GRANT READ, WRITE ON STAGE app_public.staging TO APPLICATION ROLE app_admin;
@@ -81,32 +148,24 @@ BEGIN
         ENDPOINT=''api''
         AS ''/load_csv''';
     
-    -- Create wrapper procedure for load_csv, load the data from consumer_table as csv file named consumer_table.csv to in the staging area and then call load_csv_raw  
-    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(graph_name VARCHAR, consumer_table VARCHAR, cypher_query VARCHAR)
+    -- Create wrapper procedure for load_csv, load the data from bound consumer_table reference as csv file to staging area and then call load_csv_raw
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(graph_name VARCHAR, cypher_query VARCHAR)
         RETURNS VARIANT
         LANGUAGE JAVASCRIPT
         AS
         ''
-        // Try to request access via Permission SDK (optional, may not be available in all regions)
+        var randomId = Math.abs(Math.floor(Math.random() * 1000000));
+        var csvFilename = "consumer_data_" + randomId + ".csv";
+
+        // Export bound table data to CSV using helper procedure
         try {
-            var requestAccess = snowflake.execute({
-                sqlText: "CALL app_public.request_table_access(?)",
-                binds: [CONSUMER_TABLE]
+            snowflake.execute({
+                sqlText: "CALL app_public.copy_bound_table_to_stage(?)",
+                binds: [csvFilename]
             });
         } catch (err) {
-            // Permission SDK not available - user must grant manually
-            // This is expected and OK
+            throw new Error("Failed to export data from bound table. Ensure a table is bound in the app configuration. Error: " + err.message);
         }
-        
-        var randomId = Math.abs(Math.floor(Math.random() * 1000000));
-        var csvFilename = CONSUMER_TABLE + "_" + randomId + ".csv";
-        
-        // Export data to CSV
-        var copyQuery = "COPY INTO @app_public.staging/" + csvFilename + 
-                       " FROM (SELECT * FROM " + CONSUMER_TABLE + ")" +
-                       " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)" +
-                       " SINGLE = TRUE";
-        snowflake.execute({sqlText: copyQuery});
         
         try {
             // Call load_csv_raw
@@ -137,8 +196,8 @@ BEGIN
     
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.load_csv_raw(OBJECT) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION app_public.load_csv_raw(OBJECT) TO APPLICATION ROLE app_user';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.load_csv(VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.load_csv(VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
 
     -- Create graph_query service function 
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION app_public.graph_query_raw(request OBJECT)
