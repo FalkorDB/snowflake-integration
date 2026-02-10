@@ -1,0 +1,88 @@
+name: FalkorDB Graph Database
+tagline: Transform Snowflake tables into graph structures and execute Cypher queries natively
+
+description: |
+  FalkorDB is a high-performance graph database that runs natively within your Snowflake environment. 
+  Transform relational data into graph structures and execute powerful Cypher queries without leaving Snowflake.
+
+# Resource requirements that consumers must create
+resources:
+  compute_pools:
+    - name: falkordb_pool
+      description: "Compute pool for running the FalkorDB graph database container service"
+      min_nodes: 1
+      max_nodes: 1
+      instance_family: CPU_X64_S
+      auto_resume: true
+      required: true
+      note: "This must be created as an exclusive compute pool using: CREATE COMPUTE POOL <pool_name> FOR APPLICATION <app_name>"
+      
+  warehouses:
+    - name: falkordb_wh
+      description: "Warehouse for SQL query processing and data export operations"
+      size: XSMALL
+      auto_suspend: 300
+      auto_resume: true
+      required: true
+      note: "Used for COPY INTO operations when loading Snowflake tables into graph structures"
+
+# Setup instructions
+setup:
+  steps:
+    - order: 1
+      title: "Install the application"
+      description: "Install FalkorDB from the Snowflake Marketplace"
+      
+    - order: 2
+      title: "Create compute pool"
+      description: "Create an exclusive compute pool for the application"
+      sql: |
+        CREATE COMPUTE POOL falkordb_pool FOR APPLICATION <app_instance_name>
+            MIN_NODES = 1
+            MAX_NODES = 1
+            INSTANCE_FAMILY = CPU_X64_S
+            AUTO_RESUME = TRUE;
+            
+    - order: 3
+      title: "Create warehouse"
+      description: "Create a warehouse for query processing"
+      sql: |
+        CREATE WAREHOUSE IF NOT EXISTS falkordb_wh
+            WAREHOUSE_SIZE = XSMALL
+            AUTO_SUSPEND = 300
+            AUTO_RESUME = TRUE;
+            
+    - order: 4
+      title: "Grant permissions"
+      description: "Grant the application access to the compute pool and warehouse"
+      sql: |
+        GRANT USAGE ON COMPUTE POOL falkordb_pool TO APPLICATION <app_instance_name>;
+        GRANT USAGE ON WAREHOUSE falkordb_wh TO APPLICATION <app_instance_name>;
+        
+    - order: 5
+      title: "Initialize the application"
+      description: "Start the FalkorDB service"
+      sql: |
+        CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
+        
+    - order: 6
+      title: "Verify service status"
+      description: "Check that the service is running"
+      sql: |
+        CALL <app_instance_name>.app_public.get_service_status();
+
+# Cost information
+cost_info:
+  compute_pool:
+    description: "Exclusive compute pool runs continuously when AUTO_RESUME is TRUE"
+    typical_cost: "~$2-4 per hour for CPU_X64_S instance"
+    
+  warehouse:
+    description: "Warehouse used for data loading operations, auto-suspends after 5 minutes"
+    typical_cost: "~$2 per hour when active (XSMALL size)"
+
+# Support
+support:
+  documentation: "https://github.com/FalkorDB/snowflake-integration"
+  issues: "https://github.com/FalkorDB/FalkorDB/issues"
+  website: "https://www.falkordb.com"

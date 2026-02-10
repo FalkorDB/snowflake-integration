@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: falkordb-server
-      image: /falkordb_app/napp/img_repo/falkordb_server
+      image: /falkordb_app/napp/img_repo/falkordb_server:latest
       volumeMounts:
         - name: shared-staging
           mountPath: /var/lib/FalkorDB/import
@@ -14,7 +14,7 @@ spec:
           memory: 1G
   volumes:
     - name: shared-staging
-      source: "@consumer_data.social_network.app_shared_stage"
+      source: "@app_public.staging"
       uid: 1000
       gid: 1000
   endpoints:

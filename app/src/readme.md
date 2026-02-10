@@ -14,9 +14,9 @@ FalkorDB Graph Database for Snowflake enables data teams to unlock the power of 
 
 Before installing this app, ensure you have:
 
-- **Snowflake Account**: Active Snowflake account with ACCOUNTADMIN role privileges
-- **Existing Data**: Snowflake tables containing the data you wish to analyze as graphs
-- **Compute Resources**: Sufficient credits for running compute pools and warehouses
+- **Snowflake Account**: Active Snowflake account with ACCOUNTADMIN role privileges (required for granting application privileges)
+- **Compute Resources**: Ability to create compute pools and warehouses in your account
+- **Existing Data** (optional): Snowflake tables containing the data you wish to analyze as graphs, or use the built-in sample data
 
 **No External Credentials Required**: This app runs entirely within your Snowflake environment. No external API keys, passwords, or third-party service credentials are needed. All data processing occurs within your Snowflake account boundaries.
 
@@ -46,38 +46,86 @@ Before installing this app, ensure you have:
 1. Navigate to the Snowflake Marketplace and locate "FalkorDB Graph Database"
 2. Click "Get" to install the application in your Snowflake account
 3. Grant the requested privileges when prompted:
-   - `CREATE COMPUTE POOL`: Enables the app to create container runtime environments
-   - `CREATE WAREHOUSE`: Enables the app to create SQL compute resources
    - `BIND SERVICE ENDPOINT`: Allows the app to expose internal service endpoints
+   - `CREATE COMPUTE POOL`: Allows the app to create compute pools automatically
+   - `CREATE WAREHOUSE`: Allows the app to create warehouses automatically
 4. Complete the installation process
 
-### Step 2: Initialize the Application
+### Step 2: Bind Your Data Table
 
-After installation, initialize the FalkorDB service by calling the `start_app()` procedure. The app will automatically create the required compute pool and warehouse:
+After installation, bind a table from your account to the application:
+
+1. Navigate to **Data Products** → **Apps** in Snowsight
+2. Click on your installed FalkorDB app instance
+3. Go to the **Permissions** tab
+4. Under **Object access privileges**, find **Consumer Data Table**
+5. Click **Select Data** and choose the table containing your graph data
+6. Grant SELECT privilege when prompted
+
+The table you bind will be used by the `load_csv` procedure to import data into graph structures.
+
+### Step 3: Initialize the Application
+
+The app will automatically create the required compute pool and warehouse when you start it:
 
 ```sql
--- Initialize FalkorDB with default resource names
+-- Initialize FalkorDB - it will create compute pool and warehouse automatically
+CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
+```
+
+**Default Resource Configuration**:
+- **Compute Pool**: `CPU_X64_S` instance family (4 CPU, 8GB RAM), 1 node, auto-resume enabled
+- **Warehouse**: `XSMALL` size, initially suspended, auto-suspend after 300 seconds
+
+**Advanced**: If you need custom resource sizes, create them manually **before** calling `start_app()`:
+
+```sql
+-- Optional: Create custom compute pool (if you need different specs)
+CREATE COMPUTE POOL FALKORDB_POOL
+    MIN_NODES = 1
+    MAX_NODES = 3
+    INSTANCE_FAMILY = CPU_X64_M  -- Larger instance
+    AUTO_RESUME = TRUE;
+
+-- Optional: Create custom warehouse (if you need different size)
+CREATE WAREHOUSE FALKORDB_WH WITH
+    WAREHOUSE_SIZE = 'MEDIUM'    -- Larger warehouse
+    AUTO_SUSPEND = 600
+    AUTO_RESUME = TRUE;
+
+-- Then initialize (will use your existing resources)
 CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
 ```
 
 **Important**: Replace `<app_instance_name>` with the name you chose during installation.
 
-**Note**: After `start_app()` completes, the graph database procedures (`load_csv()`, `graph_query()`, `graph_list()`, `graph_delete()`) will be created and ready to use. These procedures depend on the FalkorDB service being running.
+### Step 4: Verify Table Binding (Optional)
 
-### Step 3: Load Your Data
-
-Import data from your Snowflake tables into a graph structure:
+You can verify the table binding at any time:
 
 ```sql
--- Example: Create a social network graph from a Snowflake table
+CALL <app_instance_name>.app_public.check_bound_table();
+```
+
+To change the bound table, return to the **Permissions** tab in the app UI.
+
+### Step 5: Load Your Data
+
+Import data from your bound table into a graph structure:
+
+```sql
+-- Example: Create a social network graph from your bound table
 CALL <app_instance_name>.app_public.load_csv(
-    'social_network',                          -- Graph name
-    'my_database.my_schema.users_table',      -- Source table
-    'CREATE (:Person {id: $id, name: $name})' -- Cypher mapping
+    'social_network',
+    'LOAD CSV FROM ''file://consumer_data.csv'' AS row CREATE (:Person {id: row[0], name: row[1]})'
 );
 ```
 
-### Step 4: Query Your Graph
+**Note**:
+- The table is automatically retrieved from your Config UI binding—no need to specify it as a parameter
+- The Cypher query must include `LOAD CSV FROM 'file://...' AS row` to access the CSV data via `row[0]`, `row[1]`, etc.
+
+### Step 6: Query Your Graph
 
 Execute Cypher queries to analyze relationships and patterns:
 
@@ -98,6 +146,33 @@ CALL <app_instance_name>.app_public.graph_query(
 
 ---
 
+## Quick Start with Sample Data
+
+Want to try FalkorDB without setting up your own data? Use the built-in sample data loader:
+
+```sql
+-- 1. Make sure the service is running
+CALL <app_instance_name>.app_public.get_service_status();
+
+-- 2. Load sample social network (5 people with relationships)
+CALL <app_instance_name>.app_public.load_sample_social_network();
+
+-- 3. Query the sample data
+CALL <app_instance_name>.app_public.graph_query(
+    'demo_social_network',
+    'MATCH (p:Person) RETURN p.name, p.age, p.city'
+);
+
+-- 4. Find relationships in the sample network
+CALL <app_instance_name>.app_public.graph_query(
+    'demo_social_network',
+    'MATCH (a:Person)-[r:KNOWS]->(b:Person) 
+     RETURN a.name, b.name, r.since'
+);
+```
+
+---
+
 ## Available Procedures
 
 The FalkorDB app provides the following SQL procedures for graph management and querying:
@@ -105,14 +180,17 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 ### Graph Management
 
 **`start_app(poolname VARCHAR, whname VARCHAR)`**
-- Initializes the FalkorDB service with specified compute resources
-- Automatically creates the compute pool and warehouse if they don't exist
+- Initializes the FalkorDB service with specified compute pool and warehouse names
+- Automatically creates the compute pool (CPU_X64_S) and warehouse (XSMALL) if they don't exist
+- If resources already exist, uses them instead of creating new ones
 - Example: `CALL app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');`
 
-**`load_csv(graph_name VARCHAR, table_name VARCHAR, cypher_query VARCHAR)`**
-- Imports data from a Snowflake table into a graph structure
+**`load_csv(graph_name VARCHAR, cypher_query VARCHAR)`**
+- Imports data from your bound table (configured during installation) into a graph structure
+- Uses the table reference you selected in the Config UI
 - Automatically stages data, loads it into FalkorDB, and cleans up temporary files
-- Example: `CALL app_public.load_csv('my_graph', 'schema.table', 'CREATE (:Node {prop: $column})');`
+- Example: `CALL app_public.load_csv('my_graph', 'LOAD CSV FROM ''file://consumer_data.csv'' AS row CREATE (:Node {prop: row[0]})');`
+- **Note**: The Cypher query must include `LOAD CSV FROM 'file://...' AS row` clause to access CSV columns via `row[0]`, `row[1]`, etc.
 
 **`graph_list()`**
 - Returns a list of all graphs created in your FalkorDB instance
@@ -122,6 +200,12 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 - Permanently deletes a specified graph and all its data
 - Example: `CALL app_public.graph_delete('my_graph');`
 
+**`load_sample_social_network()`**
+- Creates a demo social network graph with sample data for testing
+- Creates 5 person nodes (Alice, Bob, Carol, David, Eve) with relationships
+- Graph name: `demo_social_network`
+- Example: `CALL app_public.load_sample_social_network();`
+
 ### Graph Querying
 
 **`graph_query(graph_name VARCHAR, cypher_query VARCHAR)`**
@@ -130,6 +214,11 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 - Example: `CALL app_public.graph_query('my_graph', 'MATCH (n) RETURN n LIMIT 10');`
 
 ### Administrative Functions
+
+**`check_bound_table()`**
+- Verifies that a table reference is properly bound to the application
+- Returns success message if bound, error message if not
+- Example: `CALL app_public.check_bound_table();`
 
 **`get_service_status()`**
 - Returns the current status of the FalkorDB service
@@ -148,10 +237,12 @@ FalkorDB operates entirely within your Snowflake environment using Snowpark Cont
 
 1. **Installation**: When you install the app, it registers the necessary privileges and creates application roles within your Snowflake account
 
-2. **Initialization**: When you call `start_app()`, the app:
-   - Creates a compute pool for running the FalkorDB container service
-   - Creates a warehouse for SQL query processing
-   - Launches the FalkorDB graph database service
+2. **Resource Creation**: You create a compute pool and warehouse in your account and grant the necessary permissions to the application
+
+3. **Initialization**: When you call `start_app()`, the app:
+   - Creates a service using your provided compute pool and warehouse
+   - Launches the FalkorDB graph database container
+   - Creates wrapper procedures for graph operations
 
 3. **Data Loading**: When you call `load_csv()`, the app:
    - Exports your specified Snowflake table to a CSV file in a staging area
