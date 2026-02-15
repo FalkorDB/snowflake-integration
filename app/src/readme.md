@@ -117,7 +117,7 @@ Import data from your bound table into a graph structure:
 -- Example: Create a social network graph from your bound table
 CALL <app_instance_name>.app_public.load_csv(
     'social_network',
-    'LOAD CSV FROM ''file://consumer_data.csv'' AS row CREATE (:Person {id: row[0], name: row[1]})'
+    'LOAD CSV FROM ''file://consumer_data.csv'' AS row MERGE (p:Person {id: row[0]}) ON CREATE SET p.name = row[1] ON MATCH SET p.name = row[1]'
 );
 ```
 
@@ -189,7 +189,7 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 - Imports data from your bound table (configured during installation) into a graph structure
 - Uses the table reference you selected in the Config UI
 - Automatically stages data, loads it into FalkorDB, and cleans up temporary files
-- Example: `CALL app_public.load_csv('my_graph', 'LOAD CSV FROM ''file://consumer_data.csv'' AS row CREATE (:Node {prop: row[0]})');`
+- Example: `CALL app_public.load_csv('my_graph', 'LOAD CSV FROM ''file://consumer_data.csv'' AS row MERGE (n:Node {prop: row[0]})');`
 - **Note**: The Cypher query must include `LOAD CSV FROM 'file://...' AS row` clause to access CSV columns via `row[0]`, `row[1]`, etc.
 
 **`graph_list()`**

@@ -4,8 +4,8 @@ manifest_version: 1
 version:
   name: V2
   label: "Version Two"
-  comment: "Implement reference binding for table selection via Permissions UI"
-  patch: 17
+  comment: "Use MERGE for idempotent sample data loading and update documentation with MERGE examples"
+  patch: 18
 
 
 #artifacts that are distributed from this version of the package
