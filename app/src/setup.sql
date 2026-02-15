@@ -340,34 +340,38 @@ BEGIN
     -- Create a small social network graph with 5 people
     LET result STRING;
     
-    -- Create nodes using direct Cypher queries
-    CALL app_public.graph_query('demo_social_network', 
-        'CREATE (:Person {name: ''Alice'', age: 30, city: ''New York''}),
-                (:Person {name: ''Bob'', age: 25, city: ''San Francisco''}),
-                (:Person {name: ''Carol'', age: 35, city: ''Seattle''}),
-                (:Person {name: ''David'', age: 28, city: ''Boston''}),
-                (:Person {name: ''Eve'', age: 32, city: ''Chicago''})');
-    
-    -- Create relationships
+    -- Create nodes using MERGE (prevents duplicates if run multiple times)
+    CALL app_public.graph_query('demo_social_network',
+        'MERGE (:Person {name: ''Alice'', age: 30, city: ''New York''})');
+    CALL app_public.graph_query('demo_social_network',
+        'MERGE (:Person {name: ''Bob'', age: 25, city: ''San Francisco''})');
+    CALL app_public.graph_query('demo_social_network',
+        'MERGE (:Person {name: ''Carol'', age: 35, city: ''Seattle''})');
+    CALL app_public.graph_query('demo_social_network',
+        'MERGE (:Person {name: ''David'', age: 28, city: ''Boston''})');
+    CALL app_public.graph_query('demo_social_network',
+        'MERGE (:Person {name: ''Eve'', age: 32, city: ''Chicago''})');
+
+    -- Create relationships using MERGE (prevents duplicates if run multiple times)
     CALL app_public.graph_query('demo_social_network',
         'MATCH (a:Person {name: ''Alice''}), (b:Person {name: ''Bob''})
-         CREATE (a)-[:KNOWS {since: 2020}]->(b)');
-    
+         MERGE (a)-[:KNOWS {since: 2020}]->(b)');
+
     CALL app_public.graph_query('demo_social_network',
         'MATCH (b:Person {name: ''Bob''}), (c:Person {name: ''Carol''})
-         CREATE (b)-[:KNOWS {since: 2019}]->(c)');
-    
+         MERGE (b)-[:KNOWS {since: 2019}]->(c)');
+
     CALL app_public.graph_query('demo_social_network',
         'MATCH (a:Person {name: ''Alice''}), (d:Person {name: ''David''})
-         CREATE (a)-[:KNOWS {since: 2021}]->(d)');
-    
+         MERGE (a)-[:KNOWS {since: 2021}]->(d)');
+
     CALL app_public.graph_query('demo_social_network',
         'MATCH (d:Person {name: ''David''}), (e:Person {name: ''Eve''})
-         CREATE (d)-[:KNOWS {since: 2022}]->(e)');
-    
+         MERGE (d)-[:KNOWS {since: 2022}]->(e)');
+
     CALL app_public.graph_query('demo_social_network',
         'MATCH (c:Person {name: ''Carol''}), (e:Person {name: ''Eve''})
-         CREATE (c)-[:KNOWS {since: 2018}]->(e)');
+         MERGE (c)-[:KNOWS {since: 2018}]->(e)');
     
     RETURN 'Sample social network created successfully! Try: CALL app_public.graph_query(''demo_social_network'', ''MATCH (p:Person) RETURN p.name, p.city'')';
 END
