@@ -32,7 +32,7 @@ jobs:
           cache-dependency-path: metrics/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r metrics/requirements.txt
+        run: pip install -r metrics/requirements.txt -c metrics/constraints.txt
 
       - name: Export metrics from Snowflake
         env:

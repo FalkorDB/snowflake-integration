@@ -73,14 +73,14 @@ def get_connection():
     return snowflake.connector.connect(**connect_args)
 
 
-def run_query(cursor, sql):
+def run_query(cursor, sql, params=None):
     """Execute a query and return results as a list of dicts."""
-    cursor.execute(sql)
+    cursor.execute(sql, params)
     columns = [desc[0].lower() for desc in cursor.description]
     rows = []
     for row in cursor:
         record = {}
-        for col, val in zip(columns, row):
+        for col, val in zip(columns, row, strict=True):
             # Convert date/datetime to ISO string for JSON serialization
             if hasattr(val, "isoformat"):
                 val = val.isoformat()
@@ -93,17 +93,18 @@ def query_cumulative_installs(cursor, listing_filter):
     """Query 1: Total installs across all time."""
     return run_query(
         cursor,
-        f"""
+        """
         SELECT
             listing_name,
             listing_display_name,
             event_type,
             COUNT(*) AS total_count
         FROM snowflake.data_sharing_usage.listing_events_daily
-        WHERE listing_name LIKE '{listing_filter}'
+        WHERE listing_name LIKE %s
           AND event_type IN ('GET', 'TRIAL', 'PURCHASE')
         GROUP BY 1, 2, 3
         """,
+        (listing_filter,),
     )
 
 
@@ -111,7 +112,7 @@ def query_daily_trends(cursor, listing_filter, days):
     """Query 2: Daily install/uninstall trends."""
     return run_query(
         cursor,
-        f"""
+        """
         SELECT
             event_date,
             listing_name,
@@ -119,11 +120,12 @@ def query_daily_trends(cursor, listing_filter, days):
             event_type,
             COUNT(*) AS daily_count
         FROM snowflake.data_sharing_usage.listing_events_daily
-        WHERE listing_name LIKE '{listing_filter}'
-          AND event_date >= DATEADD(day, -{days}, CURRENT_DATE())
+        WHERE listing_name LIKE %s
+          AND event_date >= DATEADD(day, -%s, CURRENT_DATE())
         GROUP BY 1, 2, 3, 4
         ORDER BY 1 DESC
         """,
+        (listing_filter, days),
     )
 
 
@@ -131,7 +133,7 @@ def query_active_installs(cursor, listing_filter):
     """Query 3: Currently active app installations."""
     return run_query(
         cursor,
-        f"""
+        """
         SELECT
             consumer_account_name,
             consumer_organization_name,
@@ -149,8 +151,9 @@ def query_active_installs(cursor, listing_filter):
             listing_name,
             listing_display_name
         FROM snowflake.data_sharing_usage.application_state
-        WHERE package_name LIKE '{listing_filter}'
+        WHERE package_name LIKE %s
         """,
+        (listing_filter,),
     )
 
 
@@ -158,7 +161,7 @@ def query_consumer_activity(cursor, listing_filter, days):
     """Query 4: Per-consumer job and user activity."""
     return run_query(
         cursor,
-        f"""
+        """
         SELECT
             event_date,
             listing_name,
@@ -171,10 +174,11 @@ def query_consumer_activity(cursor, listing_filter, days):
             unique_users_7d,
             unique_users_28d
         FROM snowflake.data_sharing_usage.listing_consumption_daily
-        WHERE listing_name LIKE '{listing_filter}'
-          AND event_date >= DATEADD(day, -{days}, CURRENT_DATE())
+        WHERE listing_name LIKE %s
+          AND event_date >= DATEADD(day, -%s, CURRENT_DATE())
         ORDER BY event_date DESC
         """,
+        (listing_filter, days),
     )
 
 
@@ -182,7 +186,7 @@ def query_listing_telemetry(cursor, listing_filter, days):
     """Query 5: Listing engagement (clicks, views, CTR)."""
     return run_query(
         cursor,
-        f"""
+        """
         SELECT
             event_date,
             listing_name,
@@ -193,10 +197,11 @@ def query_listing_telemetry(cursor, listing_filter, days):
             consumer_accounts_daily,
             consumer_accounts_28d
         FROM snowflake.data_sharing_usage.listing_telemetry_daily
-        WHERE listing_name LIKE '{listing_filter}'
-          AND event_date >= DATEADD(day, -{days}, CURRENT_DATE())
+        WHERE listing_name LIKE %s
+          AND event_date >= DATEADD(day, -%s, CURRENT_DATE())
         ORDER BY event_date DESC
         """,
+        (listing_filter, days),
     )
 
 

@@ -108,7 +108,7 @@ The workflow produces a JSON artifact (`sf-metrics-<run_id>`) retained for 90 da
 ## Local development
 
 ```bash
-pip install -r metrics/requirements.txt
+pip install -r metrics/requirements.txt -c metrics/constraints.txt
 
 export SNOWFLAKE_ACCOUNT="your-account"
 export SNOWFLAKE_USER="sf_metrics_bot"

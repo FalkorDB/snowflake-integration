@@ -1,2 +1,4 @@
+# Install with: pip install -r requirements.txt -c constraints.txt
+# See constraints.txt for transitive dependency security pins.
 snowflake-connector-python>=3.6.0
 cryptography>=42.0.0
