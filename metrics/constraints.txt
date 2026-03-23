@@ -1,8 +1,0 @@
-# Constraints for transitive dependencies with known CVEs.
-# See: GHSA-5pwr-322w-8jr4, GHSA-vp96-hxj8-p424 (pyOpenSSL)
-#      GHSA-38jv-5279-wg99, GHSA-2xpw-w6gg-jr37 (urllib3)
-#
-# Note: snowflake-connector-python may cap these versions. If pip
-# cannot resolve, monitor for a connector release that lifts the caps.
-pyOpenSSL>=26.0.0
-urllib3>=2.6.3

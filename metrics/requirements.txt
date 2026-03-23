@@ -1,4 +1,7 @@
-# Install with: pip install -r requirements.txt -c constraints.txt
-# See constraints.txt for transitive dependency security pins.
+# Known transitive dependency CVEs (pyOpenSSL <26.0.0, urllib3 <2.0.0):
+#   - GHSA-5pwr-322w-8jr4 (pyOpenSSL DTLS buffer overflow — not exploitable here, no DTLS usage)
+#   - GHSA-vp96-hxj8-p424 (pyOpenSSL TLS callback bypass — not exploitable, no custom callbacks)
+#   - GHSA-38jv-5279-wg99 (urllib3 decompression bomb — not exploitable, only connects to Snowflake)
+# These are capped by snowflake-connector-python and cannot be upgraded until Snowflake lifts the caps.
 snowflake-connector-python>=3.6.0
 cryptography>=42.0.0
