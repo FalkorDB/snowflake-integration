@@ -1,0 +1,66 @@
+name: Push Snowflake Metrics to HubSpot
+
+on:
+  workflow_run:
+    workflows: ["Export Snowflake Marketplace Metrics"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      metrics_file:
+        description: 'Path to metrics JSON file'
+        required: false
+        default: 'metrics_report.json'
+
+jobs:
+  push-to-hubspot:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: metrics/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r metrics/requirements.txt
+
+      - name: Export fresh metrics (if triggered manually)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+        run: |
+          python metrics/export_metrics.py \
+            --listing-filter '%FALKORDB%' \
+            --days 90 \
+            --output "${{ inputs.metrics_file || 'metrics_report.json' }}"
+
+      - name: Download metrics artifact (if triggered by workflow_run)
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: sf-metrics-${{ github.event.workflow_run.id }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true  # falls back to repo file if no artifact
+
+      - name: Push metrics to HubSpot
+        env:
+          HUBSPOT_ACCESS_TOKEN: ${{ secrets.HUBSPOT_ACCESS_TOKEN }}
+          METRICS_FILE: ${{ inputs.metrics_file || 'metrics_report.json' }}
+        run: python metrics/push_to_hubspot.py
+
+      - name: Show HubSpot push summary
+        run: |
+          echo "### HubSpot Sync Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Metrics from \`${{ inputs.metrics_file || 'metrics_report.json' }}\` pushed to HubSpot." >> $GITHUB_STEP_SUMMARY

@@ -5,3 +5,4 @@
 # These are capped by snowflake-connector-python and cannot be upgraded until Snowflake lifts the caps.
 snowflake-connector-python>=3.6.0
 cryptography>=42.0.0
+requests>=2.31.0
