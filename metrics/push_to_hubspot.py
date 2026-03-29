@@ -8,10 +8,10 @@ to HubSpot:
   - One Deal record per install event (TRIAL / PURCHASE)
 
 Required env var:
-  HUBSPOT_ACCESS_TOKEN  – Private App token from HubSpot
+  HUBSPOT_ACCESS_TOKEN - Private App token from HubSpot
 
 Optional env var:
-  METRICS_FILE  – path to metrics_report.json (default: metrics_report.json)
+  METRICS_FILE - path to metrics_report.json (default: metrics_report.json)
 
 Usage:
   python metrics/push_to_hubspot.py
@@ -158,6 +158,10 @@ def push_installs(token: str, installs: list[dict]) -> None:
         account_name = install.get("consumer_account_name", "Unknown")
         account_locator = install.get("consumer_account_locator", "")
         install_date = install.get("created_on", "")
+
+        if not account_locator:
+            log.warning("Skipping install row with missing account_locator (account: %s)", account_name)
+            continue
         current_version = install.get("current_version", "")
         upgrade_state = install.get("upgrade_state", "")
 
@@ -171,7 +175,7 @@ def push_installs(token: str, installs: list[dict]) -> None:
         company_id = upsert_company(token, account_name, company_props)
 
         # --- Deal: create one per install as a new "Snowflake Install" deal ---
-        deal_name = f"Snowflake Install – {account_name} – {install_date}"
+        deal_name = f"Snowflake Install - {account_name} - {install_date}"
         deal_props = {
             "pipeline": "default",
             "dealstage": "appointmentscheduled",
@@ -188,7 +192,10 @@ def push_consumer_activity(token: str, activity: list[dict]) -> None:
     # Group by locator (stable unique key), take the most recent row
     latest: dict[str, dict] = {}
     for row in activity:
-        locator = row.get("consumer_account_locator", "Unknown")
+        locator = row.get("consumer_account_locator", "")
+        if not locator:
+            log.warning("Skipping activity row with missing account_locator")
+            continue
         if locator not in latest or row.get("event_date", "") > latest[locator].get("event_date", ""):
             latest[locator] = row
 
