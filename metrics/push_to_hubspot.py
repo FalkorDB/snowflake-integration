@@ -166,23 +166,21 @@ def push_installs(token: str, installs: list[dict]) -> None:
         current_version = install.get("current_version", "")
         upgrade_state = install.get("upgrade_state", "")
 
-        # --- Company ---
+        # --- Company --- only use standard HubSpot properties
         company_props = {
-            "snowflake_account_locator": account_locator,
-            "snowflake_install_date": install_date,
-            "snowflake_listing": "FalkorDB Graph Database",
             "industry": "Technology",
+            "description": f"Snowflake account: {account_locator} | Installed: {install_date} | Listing: FalkorDB Graph Database",
         }
         company_id = upsert_company(token, account_name, company_props)
 
-        # --- Deal: create one per install as a new "Snowflake Install" deal ---
+        # --- Deal: create one per install ---
         deal_name = f"Snowflake Install - {account_name} - {install_date}"
         deal_props = {
             "pipeline": "default",
             "dealstage": "appointmentscheduled",
             "closedate": install_date,
             "amount": "0",
-            "snowflake_current_version": current_version,
+            "description": f"Version: {current_version} | Upgrade state: {upgrade_state}",
             "snowflake_upgrade_state": upgrade_state,
         }
         create_deal(token, deal_name, deal_props, company_id)
@@ -202,11 +200,13 @@ def push_consumer_activity(token: str, activity: list[dict]) -> None:
 
     for locator, row in latest.items():
         props = {
-            "snowflake_unique_users_1d": str(row.get("unique_users_1d", 0)),
-            "snowflake_unique_users_7d": str(row.get("unique_users_7d", 0)),
-            "snowflake_unique_users_28d": str(row.get("unique_users_28d", 0)),
-            "snowflake_jobs_last_28d": str(row.get("jobs", 0)),
-            "snowflake_last_activity_date": row.get("event_date", ""),
+            "description": (
+                f"Users 1d: {row.get('unique_users_1d', 0)} | "
+                f"7d: {row.get('unique_users_7d', 0)} | "
+                f"28d: {row.get('unique_users_28d', 0)} | "
+                f"Jobs: {row.get('jobs', 0)} | "
+                f"Last active: {row.get('event_date', '')}"
+            ),
         }
         existing_id = search_company(token, locator)
         if existing_id:
