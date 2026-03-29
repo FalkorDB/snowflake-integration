@@ -188,7 +188,7 @@ def push_consumer_activity(token: str, activity: list[dict]) -> None:
     latest: dict[str, dict] = {}
     for row in activity:
         name = row.get("consumer_account_name", "Unknown")
-        if name not in latest or row.get("activity_date", "") > latest[name].get("activity_date", ""):
+        if name not in latest or row.get("event_date", "") > latest[name].get("event_date", ""):
             latest[name] = row
 
     for account_name, row in latest.items():
@@ -196,8 +196,8 @@ def push_consumer_activity(token: str, activity: list[dict]) -> None:
             "snowflake_unique_users_1d": str(row.get("unique_users_1d", 0)),
             "snowflake_unique_users_7d": str(row.get("unique_users_7d", 0)),
             "snowflake_unique_users_28d": str(row.get("unique_users_28d", 0)),
-            "snowflake_jobs_last_28d": str(row.get("total_jobs_28d", 0)),
-            "snowflake_last_activity_date": row.get("activity_date", ""),
+            "snowflake_jobs_last_28d": str(row.get("jobs", 0)),
+            "snowflake_last_activity_date": row.get("event_date", ""),
         }
         existing_id = search_company(token, account_name)
         if existing_id:
@@ -221,7 +221,7 @@ def main() -> None:
         sys.exit(1)
 
     report = load_report(metrics_file)
-    log.info("Loaded report generated at: %s", report.get("generated_at", "unknown"))
+    log.info("Loaded report generated at: %s", report.get("export_timestamp", "unknown"))
 
     summary = report.get("summary", {})
     log.info(
@@ -231,9 +231,9 @@ def main() -> None:
         summary.get("unique_consumers_in_period", 0),
     )
 
-    data = report.get("data", {})
+    data = report.get("metrics", {})
 
-    installs = data.get("installs", [])
+    installs = data.get("cumulative_installs", [])
     if installs:
         log.info("Processing %d install records...", len(installs))
         push_installs(token, installs)

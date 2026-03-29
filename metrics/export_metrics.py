@@ -27,15 +27,27 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
 
-def get_connection():
-    """Create a Snowflake connection using environment variables."""
+def get_connection(connection_name=None):
+    """Create a Snowflake connection.
+
+    If connection_name is given, uses the named connection from the local
+    Snowflake CLI config (~/.snowflake/connections.toml or config.toml).
+    Otherwise falls back to environment variables.
+    """
+    if connection_name:
+        return snowflake.connector.connect(
+            connection_name=connection_name,
+            database="SNOWFLAKE",
+            schema="DATA_SHARING_USAGE",
+        )
+
     account = os.environ.get("SNOWFLAKE_ACCOUNT")
     user = os.environ.get("SNOWFLAKE_USER")
     warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE", "WH_METRICS")
 
     if not account or not user:
         print(
-            "Error: SNOWFLAKE_ACCOUNT and SNOWFLAKE_USER environment variables are required.",
+            "Error: Provide --connection <name> or set SNOWFLAKE_ACCOUNT and SNOWFLAKE_USER.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -248,13 +260,18 @@ def main():
         default=None,
         help="Output file path (default: stdout)",
     )
+    parser.add_argument(
+        "--connection",
+        default=None,
+        help="Snowflake CLI connection name from ~/.snowflake/config.toml (e.g. myconnection)",
+    )
     args = parser.parse_args()
 
     print(
-        f"Connecting to Snowflake (account: {os.environ.get('SNOWFLAKE_ACCOUNT', 'N/A')})...",
+        f"Connecting to Snowflake (connection: {args.connection or 'env vars'})...",
         file=sys.stderr,
     )
-    conn = get_connection()
+    conn = get_connection(connection_name=args.connection)
     cursor = conn.cursor()
 
     try:
