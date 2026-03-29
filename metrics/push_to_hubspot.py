@@ -33,6 +33,47 @@ log = logging.getLogger(__name__)
 
 HUBSPOT_BASE = "https://api.hubapi.com"
 
+# Custom properties to create in HubSpot for Snowflake data
+CUSTOM_COMPANY_PROPERTIES = [
+    {"name": "sf_account_locator",        "label": "Snowflake Account Locator",       "type": "string",   "fieldType": "text"},
+    {"name": "sf_org_name",               "label": "Snowflake Org Name",              "type": "string",   "fieldType": "text"},
+    {"name": "sf_region",                 "label": "Snowflake Region",                "type": "string",   "fieldType": "text"},
+    {"name": "sf_app_version",            "label": "FalkorDB App Version",            "type": "string",   "fieldType": "text"},
+    {"name": "sf_app_patch",              "label": "FalkorDB App Patch",              "type": "string",   "fieldType": "text"},
+    {"name": "sf_health_status",          "label": "Health Status",                   "type": "string",   "fieldType": "text"},
+    {"name": "sf_health_updated_on",      "label": "Health Status Updated On",        "type": "string",   "fieldType": "text"},
+    {"name": "sf_installed_on",           "label": "App Install Date",                "type": "string",   "fieldType": "text"},
+    {"name": "sf_upgrade_state",          "label": "Upgrade State",                   "type": "string",   "fieldType": "text"},
+    {"name": "sf_unique_users_1d",        "label": "Unique Users (1 day)",            "type": "number",   "fieldType": "number"},
+    {"name": "sf_unique_users_7d",        "label": "Unique Users (7 days)",           "type": "number",   "fieldType": "number"},
+    {"name": "sf_unique_users_28d",       "label": "Unique Users (28 days)",          "type": "number",   "fieldType": "number"},
+    {"name": "sf_jobs",                   "label": "Snowflake Jobs (period)",         "type": "number",   "fieldType": "number"},
+]
+
+
+def ensure_custom_properties(token: str) -> None:
+    """Create custom company properties in HubSpot if they don't exist yet."""
+    url = f"{HUBSPOT_BASE}/crm/v3/properties/companies"
+    resp = requests.get(url, headers=_headers(token), timeout=15)
+    resp.raise_for_status()
+    existing = {p["name"] for p in resp.json().get("results", [])}
+
+    for prop in CUSTOM_COMPANY_PROPERTIES:
+        if prop["name"] in existing:
+            continue
+        payload = {
+            "name": prop["name"],
+            "label": prop["label"],
+            "type": prop["type"],
+            "fieldType": prop["fieldType"],
+            "groupName": "companyinformation",
+        }
+        r = requests.post(url, headers=_headers(token), json=payload, timeout=15)
+        if r.ok:
+            log.info("Created custom property: %s", prop["name"])
+        else:
+            log.warning("Could not create property %s: %s", prop["name"], r.text)
+
 
 # ---------------------------------------------------------------------------
 # HubSpot helpers
@@ -71,21 +112,26 @@ def search_company(token: str, account_locator: str) -> str | None:
 
 def upsert_company(token: str, account_name: str, extra_props: dict) -> str:
     """Create or update a HubSpot Company. Returns the company id."""
-    account_locator = extra_props.get("snowflake_account_locator") or account_name
+    account_locator = extra_props.get("sf_account_locator") or account_name
     existing_id = search_company(token, account_locator)
-    # Only use standard HubSpot properties
+    # Allow standard HubSpot properties + our custom sf_* properties
     allowed = {"name", "industry", "description", "phone", "city", "country"}
-    props = {"name": account_locator, **{k: v for k, v in extra_props.items() if k in allowed}}
+    custom = {p["name"] for p in CUSTOM_COMPANY_PROPERTIES}
+    props = {"name": account_locator, **{k: v for k, v in extra_props.items() if k in allowed | custom}}
 
     if existing_id:
         url = f"{HUBSPOT_BASE}/crm/v3/objects/companies/{existing_id}"
         resp = requests.patch(url, headers=_headers(token), json={"properties": props}, timeout=15)
+        if not resp.ok:
+            log.error("HubSpot PATCH error %s: %s", resp.status_code, resp.text)
         resp.raise_for_status()
         log.info("Updated company '%s' (id=%s)", account_name, existing_id)
         return existing_id
     else:
         url = f"{HUBSPOT_BASE}/crm/v3/objects/companies"
         resp = requests.post(url, headers=_headers(token), json={"properties": props}, timeout=15)
+        if not resp.ok:
+            log.error("HubSpot POST error %s: %s", resp.status_code, resp.text)
         resp.raise_for_status()
         new_id = resp.json()["id"]
         log.info("Created company '%s' (id=%s)", account_name, new_id)
@@ -164,17 +210,32 @@ def push_installs(token: str, installs: list[dict]) -> None:
         if not account_locator:
             log.warning("Skipping install row with missing account_locator (account: %s)", account_name)
             continue
-        current_version = install.get("current_version", "")
-        upgrade_state = install.get("upgrade_state", "")
 
-        # --- Company --- only use standard HubSpot properties
+        current_version = install.get("current_version", "")
+        current_patch = str(install.get("current_patch", ""))
+        upgrade_state = install.get("upgrade_state", "")
+        health_status = install.get("last_health_status", "")
+        health_updated = str(install.get("last_health_status_updated_on", ""))
+        installed_on = str(install.get("current_installed_on", ""))
+        org_name = install.get("consumer_organization_name", "")
+        region = install.get("consumer_snowflake_region", "")
+
         company_props = {
-            "industry": "Technology",
-            "description": f"Snowflake account: {account_locator} | Installed: {install_date} | Listing: FalkorDB Graph Database",
+            "industry": "COMPUTER_SOFTWARE",
+            "description": f"FalkorDB Snowflake Native App | Org: {org_name} | Region: {region}",
+            "sf_account_locator":   account_locator,
+            "sf_org_name":          org_name,
+            "sf_region":            region,
+            "sf_app_version":       current_version,
+            "sf_app_patch":         current_patch,
+            "sf_health_status":     health_status,
+            "sf_health_updated_on": health_updated,
+            "sf_installed_on":      installed_on,
+            "sf_upgrade_state":     upgrade_state,
         }
         company_id = upsert_company(token, account_name, company_props)
 
-        # --- Deal: create one per install ---
+        # --- Deal: one per install ---
         deal_name = f"Snowflake Install - {account_name} - {install_date}"
         deal_props = {
             "pipeline": "default",
@@ -199,13 +260,10 @@ def push_consumer_activity(token: str, activity: list[dict]) -> None:
 
     for locator, row in latest.items():
         props = {
-            "description": (
-                f"Users 1d: {row.get('unique_users_1d', 0)} | "
-                f"7d: {row.get('unique_users_7d', 0)} | "
-                f"28d: {row.get('unique_users_28d', 0)} | "
-                f"Jobs: {row.get('jobs', 0)} | "
-                f"Last active: {row.get('event_date', '')}"
-            ),
+            "sf_unique_users_1d":  row.get("unique_users_1d", 0),
+            "sf_unique_users_7d":  row.get("unique_users_7d", 0),
+            "sf_unique_users_28d": row.get("unique_users_28d", 0),
+            "sf_jobs":             row.get("jobs", 0),
         }
         existing_id = search_company(token, locator)
         if existing_id:
@@ -230,6 +288,9 @@ def main() -> None:
 
     report = load_report(metrics_file)
     log.info("Loaded report generated at: %s", report.get("export_timestamp", "unknown"))
+
+    log.info("Ensuring custom HubSpot properties exist...")
+    ensure_custom_properties(token)
 
     summary = report.get("summary", {})
     log.info(
