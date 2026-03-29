@@ -46,21 +46,21 @@ def _headers(token: str) -> dict:
 
 
 def search_company(token: str, account_locator: str) -> str | None:
-    """Return HubSpot company id by snowflake_account_locator (stable unique key)."""
+    """Return HubSpot company id by name (using account_locator as the name key)."""
     url = f"{HUBSPOT_BASE}/crm/v3/objects/companies/search"
     payload = {
         "filterGroups": [
             {
                 "filters": [
                     {
-                        "propertyName": "snowflake_account_locator",
+                        "propertyName": "name",
                         "operator": "EQ",
                         "value": account_locator,
                     }
                 ]
             }
         ],
-        "properties": ["name", "snowflake_account_locator"],
+        "properties": ["name"],
         "limit": 1,
     }
     resp = requests.post(url, headers=_headers(token), json=payload, timeout=15)
@@ -71,9 +71,10 @@ def search_company(token: str, account_locator: str) -> str | None:
 
 def upsert_company(token: str, account_name: str, extra_props: dict) -> str:
     """Create or update a HubSpot Company. Returns the company id."""
-    account_locator = extra_props.get("snowflake_account_locator", account_name)
+    account_locator = extra_props.get("snowflake_account_locator") or account_name
     existing_id = search_company(token, account_locator)
-    props = {"name": account_name, **extra_props}
+    # Use locator as HubSpot name so it's unique and stable
+    props = {"name": account_locator, "phone": account_name, **extra_props}
 
     if existing_id:
         url = f"{HUBSPOT_BASE}/crm/v3/objects/companies/{existing_id}"
