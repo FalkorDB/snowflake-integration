@@ -73,8 +73,9 @@ def upsert_company(token: str, account_name: str, extra_props: dict) -> str:
     """Create or update a HubSpot Company. Returns the company id."""
     account_locator = extra_props.get("snowflake_account_locator") or account_name
     existing_id = search_company(token, account_locator)
-    # Use locator as HubSpot name so it's unique and stable
-    props = {"name": account_locator, "phone": account_name, **extra_props}
+    # Only use standard HubSpot properties
+    allowed = {"name", "industry", "description", "phone", "city", "country"}
+    props = {"name": account_locator, **{k: v for k, v in extra_props.items() if k in allowed}}
 
     if existing_id:
         url = f"{HUBSPOT_BASE}/crm/v3/objects/companies/{existing_id}"
@@ -180,8 +181,6 @@ def push_installs(token: str, installs: list[dict]) -> None:
             "dealstage": "appointmentscheduled",
             "closedate": install_date,
             "amount": "0",
-            "description": f"Version: {current_version} | Upgrade state: {upgrade_state}",
-            "snowflake_upgrade_state": upgrade_state,
         }
         create_deal(token, deal_name, deal_props, company_id)
 
