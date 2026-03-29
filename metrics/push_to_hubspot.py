@@ -45,22 +45,22 @@ def _headers(token: str) -> dict:
     }
 
 
-def search_company(token: str, account_name: str) -> str | None:
-    """Return HubSpot company id if a company with this name already exists."""
+def search_company(token: str, account_locator: str) -> str | None:
+    """Return HubSpot company id by snowflake_account_locator (stable unique key)."""
     url = f"{HUBSPOT_BASE}/crm/v3/objects/companies/search"
     payload = {
         "filterGroups": [
             {
                 "filters": [
                     {
-                        "propertyName": "name",
+                        "propertyName": "snowflake_account_locator",
                         "operator": "EQ",
-                        "value": account_name,
+                        "value": account_locator,
                     }
                 ]
             }
         ],
-        "properties": ["name"],
+        "properties": ["name", "snowflake_account_locator"],
         "limit": 1,
     }
     resp = requests.post(url, headers=_headers(token), json=payload, timeout=15)
@@ -71,7 +71,8 @@ def search_company(token: str, account_name: str) -> str | None:
 
 def upsert_company(token: str, account_name: str, extra_props: dict) -> str:
     """Create or update a HubSpot Company. Returns the company id."""
-    existing_id = search_company(token, account_name)
+    account_locator = extra_props.get("snowflake_account_locator", account_name)
+    existing_id = search_company(token, account_locator)
     props = {"name": account_name, **extra_props}
 
     if existing_id:
@@ -152,12 +153,13 @@ def load_report(path: str) -> dict:
 
 
 def push_installs(token: str, installs: list[dict]) -> None:
-    """Upsert one Company + optional Deal per install record."""
+    """Upsert one Company per active install record (from active_installs query)."""
     for install in installs:
-        account_name = install.get("consumer_account_name") or install.get("account_name", "Unknown")
+        account_name = install.get("consumer_account_name", "Unknown")
         account_locator = install.get("consumer_account_locator", "")
-        install_date = install.get("install_date") or install.get("event_date", "")
-        event_type = install.get("event_type", "INSTALL").upper()
+        install_date = install.get("created_on", "")
+        current_version = install.get("current_version", "")
+        upgrade_state = install.get("upgrade_state", "")
 
         # --- Company ---
         company_props = {
@@ -168,30 +170,29 @@ def push_installs(token: str, installs: list[dict]) -> None:
         }
         company_id = upsert_company(token, account_name, company_props)
 
-        # --- Deal (only for TRIAL / PURCHASE) ---
-        if event_type in ("TRIAL", "PURCHASE", "GET"):
-            stage = "qualifiedtobuy" if event_type == "PURCHASE" else "appointmentscheduled"
-            deal_name = f"Snowflake {event_type} – {account_name} – {install_date}"
-            deal_props = {
-                "pipeline": "default",
-                "dealstage": stage,
-                "closedate": install_date,
-                "amount": "0",
-                "snowflake_event_type": event_type,
-            }
-            create_deal(token, deal_name, deal_props, company_id)
+        # --- Deal: create one per install as a new "Snowflake Install" deal ---
+        deal_name = f"Snowflake Install – {account_name} – {install_date}"
+        deal_props = {
+            "pipeline": "default",
+            "dealstage": "appointmentscheduled",
+            "closedate": install_date,
+            "amount": "0",
+            "snowflake_current_version": current_version,
+            "snowflake_upgrade_state": upgrade_state,
+        }
+        create_deal(token, deal_name, deal_props, company_id)
 
 
 def push_consumer_activity(token: str, activity: list[dict]) -> None:
     """Update Company records with latest usage metrics."""
-    # Group by account name, take the most recent row
+    # Group by locator (stable unique key), take the most recent row
     latest: dict[str, dict] = {}
     for row in activity:
-        name = row.get("consumer_account_name", "Unknown")
-        if name not in latest or row.get("event_date", "") > latest[name].get("event_date", ""):
-            latest[name] = row
+        locator = row.get("consumer_account_locator", "Unknown")
+        if locator not in latest or row.get("event_date", "") > latest[locator].get("event_date", ""):
+            latest[locator] = row
 
-    for account_name, row in latest.items():
+    for locator, row in latest.items():
         props = {
             "snowflake_unique_users_1d": str(row.get("unique_users_1d", 0)),
             "snowflake_unique_users_7d": str(row.get("unique_users_7d", 0)),
@@ -199,14 +200,14 @@ def push_consumer_activity(token: str, activity: list[dict]) -> None:
             "snowflake_jobs_last_28d": str(row.get("jobs", 0)),
             "snowflake_last_activity_date": row.get("event_date", ""),
         }
-        existing_id = search_company(token, account_name)
+        existing_id = search_company(token, locator)
         if existing_id:
             url = f"{HUBSPOT_BASE}/crm/v3/objects/companies/{existing_id}"
             resp = requests.patch(url, headers=_headers(token), json={"properties": props}, timeout=15)
             resp.raise_for_status()
-            log.info("Updated activity metrics for company '%s'", account_name)
+            log.info("Updated activity metrics for locator '%s'", locator)
         else:
-            log.warning("Company '%s' not found in HubSpot, skipping activity update.", account_name)
+            log.warning("Company with locator '%s' not found in HubSpot, skipping activity update.", locator)
 
 
 def main() -> None:
@@ -233,12 +234,12 @@ def main() -> None:
 
     data = report.get("metrics", {})
 
-    installs = data.get("cumulative_installs", [])
+    installs = data.get("active_installs", [])
     if installs:
-        log.info("Processing %d install records...", len(installs))
+        log.info("Processing %d active install records...", len(installs))
         push_installs(token, installs)
     else:
-        log.info("No install records found in report.")
+        log.info("No active install records found in report.")
 
     activity = data.get("consumer_activity", [])
     if activity:
