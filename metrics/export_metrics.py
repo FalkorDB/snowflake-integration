@@ -183,9 +183,9 @@ def transform_version(current_version: str, current_patch) -> str:
 
 
 def transform_status(upgrade_state: str) -> str:
-    """COMPLETE → active, DISABLED → inactive, PENDING → pending"""
-    mapping = {"COMPLETE": "active", "DISABLED": "inactive", "PENDING": "pending"}
-    return mapping.get(str(upgrade_state or "").upper(), str(upgrade_state or "").lower())
+    """COMPLETE → active, DISABLED → canceled, PENDING → scheduled"""
+    mapping = {"COMPLETE": "active", "DISABLED": "canceled", "PENDING": "scheduled"}
+    return mapping.get(str(upgrade_state or "").upper(), "active")
 
 
 def transform_deployment_type(event_type: str) -> str:
