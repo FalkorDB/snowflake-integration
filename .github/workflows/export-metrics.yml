@@ -9,10 +9,6 @@ on:
         description: 'Listing name filter (SQL LIKE pattern)'
         required: false
         default: '%FALKORDB%'
-      days:
-        description: 'Lookback window in days'
-        required: false
-        default: '90'
 
 jobs:
   export-metrics:
@@ -34,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r metrics/requirements.txt
 
-      - name: Export metrics from Snowflake
+      - name: Export Snowflake data for HubSpot subscriptions
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -43,19 +39,18 @@ jobs:
         run: |
           python metrics/export_metrics.py \
             --listing-filter "${{ inputs.listing_filter || '%FALKORDB%' }}" \
-            --days "${{ inputs.days || '90' }}" \
             --output metrics_report.json
 
       - name: Show summary
         run: |
-          echo "### Snowflake Marketplace Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "### Snowflake → HubSpot Subscription Export" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
           python -c "
           import json
           with open('metrics_report.json') as f:
               data = json.load(f)
-          print(json.dumps(data['summary'], indent=2))
+          print(json.dumps({'subscription_count': data['subscription_count'], 'export_timestamp': data['export_timestamp']}, indent=2))
           " >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 

@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""Export Snowflake Marketplace usage metrics for the FalkorDB Native App.
+"""Export Snowflake Marketplace data for 14 HubSpot subscription fields.
 
-Queries Snowflake's built-in provider analytics views (DATA_SHARING_USAGE)
-and outputs a JSON report with install counts, active installs, consumer
-activity, and listing telemetry.
+Queries only the Snowflake provider views needed for the field mapping
+defined in hubspot_field_mapping.json and outputs one record per consumer.
+
+Sources:
+  - APPLICATION_STATE  → cloud_region, cloud_vendor, cloud_version,
+                          hs_recurring_billing_start_date, hs_status,
+                          db_name, hs_name, hs_last_modified_at
+  - LISTING_EVENTS_DAILY → deployment_type, subscription_plan, email
+
+Hardcoded (no Snowflake source):
+  - cloud_provider = "snowflake"
+  - node_instance_type = "none"
+  - falkordb_version = "need to add this" (until app_metadata is deployed)
 
 Environment variables (required):
-    SNOWFLAKE_ACCOUNT   - Snowflake account identifier (e.g. xyz12345.us-east-1)
+    SNOWFLAKE_ACCOUNT   - Snowflake account identifier
     SNOWFLAKE_USER      - Service account username
-    SNOWFLAKE_WAREHOUSE - Warehouse name (e.g. WH_METRICS)
+    SNOWFLAKE_WAREHOUSE - Warehouse name
 
 Authentication (one of):
     SNOWFLAKE_PRIVATE_KEY - PEM-encoded private key string (for CI/CD)
-    SNOWFLAKE_PASSWORD    - Password (fallback, not recommended for CI/CD)
+    SNOWFLAKE_PASSWORD    - Password (fallback)
 """
 
 import argparse
@@ -28,12 +38,7 @@ from cryptography.hazmat.primitives import serialization
 
 
 def get_connection(connection_name=None):
-    """Create a Snowflake connection.
-
-    If connection_name is given, uses the named connection from the local
-    Snowflake CLI config (~/.snowflake/connections.toml or config.toml).
-    Otherwise falls back to environment variables.
-    """
+    """Create a Snowflake connection."""
     if connection_name:
         return snowflake.connector.connect(
             connection_name=connection_name,
@@ -93,7 +98,6 @@ def run_query(cursor, sql, params=None):
     for row in cursor:
         record = {}
         for col, val in zip(columns, row, strict=True):
-            # Convert date/datetime to ISO string for JSON serialization
             if hasattr(val, "isoformat"):
                 val = val.isoformat()
             record[col] = val
@@ -101,67 +105,29 @@ def run_query(cursor, sql, params=None):
     return rows
 
 
-def query_cumulative_installs(cursor, listing_filter):
-    """Query 1: Total installs across all time."""
+# ---------------------------------------------------------------------------
+# Snowflake queries — only the fields needed for the 14 HubSpot mappings
+# ---------------------------------------------------------------------------
+
+def query_application_state(cursor, listing_filter):
+    """Pull per-consumer install data from APPLICATION_STATE.
+
+    Fields used for: cloud_region, cloud_vendor, cloud_version,
+    hs_recurring_billing_start_date, hs_status, db_name, hs_name,
+    hs_last_modified_at.
+    """
     return run_query(
         cursor,
         """
         SELECT
-            listing_name,
-            listing_display_name,
-            event_type,
-            COUNT(*) AS total_count
-        FROM snowflake.data_sharing_usage.listing_events_daily
-        WHERE listing_name LIKE %s
-          AND event_type IN ('GET', 'TRIAL', 'PURCHASE')
-        GROUP BY 1, 2, 3
-        """,
-        (listing_filter,),
-    )
-
-
-def query_daily_trends(cursor, listing_filter, days):
-    """Query 2: Daily install/uninstall trends."""
-    return run_query(
-        cursor,
-        """
-        SELECT
-            event_date,
-            listing_name,
-            listing_display_name,
-            event_type,
-            COUNT(*) AS daily_count
-        FROM snowflake.data_sharing_usage.listing_events_daily
-        WHERE listing_name LIKE %s
-          AND event_date >= DATEADD(day, -%s, CURRENT_DATE())
-        GROUP BY 1, 2, 3, 4
-        ORDER BY 1 DESC
-        """,
-        (listing_filter, days),
-    )
-
-
-def query_active_installs(cursor, listing_filter):
-    """Query 3: Currently active app installations."""
-    return run_query(
-        cursor,
-        """
-        SELECT
-            consumer_account_name,
-            consumer_organization_name,
             consumer_account_locator,
+            consumer_account_name,
             consumer_snowflake_region,
-            package_name,
-            application_name_hash,
             current_version,
             current_patch,
             created_on,
-            current_installed_on,
             upgrade_state,
-            last_health_status,
-            last_health_status_updated_on,
-            listing_name,
-            listing_display_name
+            last_upgraded_on
         FROM snowflake.data_sharing_usage.application_state
         WHERE package_name LIKE %s
         """,
@@ -169,91 +135,149 @@ def query_active_installs(cursor, listing_filter):
     )
 
 
-def query_consumer_activity(cursor, listing_filter, days):
-    """Query 4: Per-consumer job and user activity."""
+def query_listing_events(cursor, listing_filter):
+    """Pull per-consumer event data from LISTING_EVENTS_DAILY.
+
+    Fields used for: deployment_type, subscription_plan, email.
+    """
     return run_query(
         cursor,
         """
         SELECT
-            event_date,
-            listing_name,
-            listing_display_name,
-            consumer_account_name,
-            consumer_organization,
             consumer_account_locator,
-            jobs,
-            unique_users_1d,
-            unique_users_7d,
-            unique_users_28d
-        FROM snowflake.data_sharing_usage.listing_consumption_daily
-        WHERE listing_name LIKE %s
-          AND event_date >= DATEADD(day, -%s, CURRENT_DATE())
-        ORDER BY event_date DESC
-        """,
-        (listing_filter, days),
-    )
-
-
-def query_listing_telemetry(cursor, listing_filter, days):
-    """Query 5: Listing engagement (clicks, views, CTR)."""
-    return run_query(
-        cursor,
-        """
-        SELECT
-            event_date,
-            listing_name,
-            listing_display_name,
+            consumer_account_name,
             event_type,
-            action,
-            event_count,
-            consumer_accounts_daily,
-            consumer_accounts_28d
-        FROM snowflake.data_sharing_usage.listing_telemetry_daily
+            consumer_email
+        FROM snowflake.data_sharing_usage.listing_events_daily
         WHERE listing_name LIKE %s
-          AND event_date >= DATEADD(day, -%s, CURRENT_DATE())
-        ORDER BY event_date DESC
+          AND event_type IN ('GET', 'TRIAL', 'PURCHASE')
         """,
-        (listing_filter, days),
+        (listing_filter,),
     )
 
 
-def build_summary(cumulative, active, activity):
-    """Compute high-level summary metrics."""
-    total_installs = sum(r.get("total_count", 0) for r in cumulative)
-    active_count = len(active)
-    healthy_count = sum(
-        1 for r in active if r.get("last_health_status") == "OK"
-    )
-    total_jobs = sum(r.get("jobs", 0) for r in activity)
+# ---------------------------------------------------------------------------
+# Transform helpers (matching hubspot_field_mapping.json transforms)
+# ---------------------------------------------------------------------------
 
-    # Unique consumers in activity data (approximate for the lookback window)
-    consumer_accounts = {
-        r.get("consumer_account_locator") for r in activity if r.get("consumer_account_locator")
-    }
+def transform_region(snowflake_region: str) -> str:
+    """AWS_US_WEST_2 → us-west-2"""
+    if not snowflake_region:
+        return ""
+    parts = snowflake_region.split("_", 1)
+    return parts[1].lower().replace("_", "-") if len(parts) > 1 else snowflake_region.lower()
 
-    return {
-        "total_installs_all_time": total_installs,
-        "active_installs_now": active_count,
-        "healthy_installs": healthy_count,
-        "total_jobs_in_period": total_jobs,
-        "unique_consumers_in_period": len(consumer_accounts),
-    }
+
+def transform_vendor(snowflake_region: str) -> str:
+    """AWS_US_WEST_2 → aws"""
+    if not snowflake_region:
+        return ""
+    return snowflake_region.split("_", 1)[0].lower()
+
+
+def transform_version(current_version: str, current_patch) -> str:
+    """V2 + 18 → V2.18"""
+    v = str(current_version or "")
+    p = str(current_patch or "")
+    return f"{v}.{p}" if v and p else v or p or ""
+
+
+def transform_status(upgrade_state: str) -> str:
+    """COMPLETE → active, DISABLED → inactive, PENDING → pending"""
+    mapping = {"COMPLETE": "active", "DISABLED": "inactive", "PENDING": "pending"}
+    return mapping.get(str(upgrade_state or "").upper(), str(upgrade_state or "").lower())
+
+
+def transform_deployment_type(event_type: str) -> str:
+    """TRIAL → free, PURCHASE → paid, GET → free"""
+    mapping = {"TRIAL": "free", "PURCHASE": "paid", "GET": "free"}
+    return mapping.get(str(event_type or "").upper(), "free")
+
+
+def transform_subscription_plan(event_type: str) -> str:
+    """TRIAL → falkordb_free, PURCHASE → falkordb_paid"""
+    mapping = {"TRIAL": "falkordb_free", "PURCHASE": "falkordb_paid", "GET": "falkordb_free"}
+    return mapping.get(str(event_type or "").upper(), "falkordb_free")
+
+
+def transform_date(val) -> str:
+    """Extract date portion from ISO datetime string."""
+    s = str(val or "")
+    return s[:10] if s else ""
+
+
+def transform_hs_name(locator: str) -> str:
+    """FLB05576 → instance-flb05576"""
+    return f"instance-{locator.lower()}" if locator else ""
+
+
+# ---------------------------------------------------------------------------
+# Build per-consumer subscription records
+# ---------------------------------------------------------------------------
+
+def build_subscriptions(app_state_rows, events_rows):
+    """Merge APPLICATION_STATE + LISTING_EVENTS_DAILY into 14-field records per consumer.
+
+    Key = consumer_account_locator (stable unique identifier).
+    """
+    # Index events by locator — keep the most significant event type
+    # Priority: PURCHASE > TRIAL > GET
+    event_priority = {"PURCHASE": 3, "TRIAL": 2, "GET": 1}
+    events_by_locator: dict[str, dict] = {}
+    for row in events_rows:
+        locator = row.get("consumer_account_locator", "")
+        if not locator:
+            continue
+        existing = events_by_locator.get(locator)
+        row_priority = event_priority.get(str(row.get("event_type", "")).upper(), 0)
+        if not existing or row_priority > event_priority.get(str(existing.get("event_type", "")).upper(), 0):
+            events_by_locator[locator] = row
+        # Prefer rows that have email
+        if row.get("consumer_email") and not events_by_locator[locator].get("consumer_email"):
+            events_by_locator[locator]["consumer_email"] = row["consumer_email"]
+
+    subscriptions = []
+    for install in app_state_rows:
+        locator = install.get("consumer_account_locator", "")
+        if not locator:
+            continue
+
+        region_raw = install.get("consumer_snowflake_region", "") or ""
+        event_row = events_by_locator.get(locator, {})
+        event_type = event_row.get("event_type", "")
+        last_upgraded = install.get("last_upgraded_on")
+        created_on = install.get("created_on")
+
+        subscription = {
+            "cloud_region": transform_region(region_raw),
+            "cloud_vendor": transform_vendor(region_raw),
+            "cloud_version": transform_version(
+                install.get("current_version"), install.get("current_patch")
+            ),
+            "cloud_provider": "snowflake",
+            "falkordb_version": "need to add this",
+            "hs_recurring_billing_start_date": transform_date(created_on),
+            "hs_status": transform_status(install.get("upgrade_state")),
+            "db_name": install.get("consumer_account_name", ""),
+            "hs_name": transform_hs_name(locator),
+            "deployment_type": transform_deployment_type(event_type),
+            "hs_last_modified_at": transform_date(last_upgraded) or transform_date(created_on),
+            "subscription_plan": transform_subscription_plan(event_type),
+            "email": event_row.get("consumer_email") or "",
+        }
+        subscriptions.append(subscription)
+
+    return subscriptions
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export Snowflake Marketplace metrics for FalkorDB Native App"
+        description="Export Snowflake data for HubSpot subscriptions (14 fields per consumer)"
     )
     parser.add_argument(
         "--listing-filter",
         default=os.environ.get("LISTING_FILTER", "%FALKORDB%"),
-        help="SQL LIKE pattern for listing name filter (default: %%FALKORDB%%)",
-    )
-    parser.add_argument(
-        "--days",
-        type=int,
-        default=int(os.environ.get("LOOKBACK_DAYS", "90")),
-        help="Lookback window in days for historical queries (default: 90)",
+        help="SQL LIKE pattern for listing/package name filter (default: %%FALKORDB%%)",
     )
     parser.add_argument(
         "--output",
@@ -263,7 +287,7 @@ def main():
     parser.add_argument(
         "--connection",
         default=None,
-        help="Snowflake CLI connection name from ~/.snowflake/config.toml (e.g. myconnection)",
+        help="Snowflake CLI connection name from ~/.snowflake/config.toml",
     )
     args = parser.parse_args()
 
@@ -275,36 +299,23 @@ def main():
     cursor = conn.cursor()
 
     try:
-        print(f"Querying metrics (filter: {args.listing_filter}, days: {args.days})...", file=sys.stderr)
+        print(f"Querying Snowflake (filter: {args.listing_filter})...", file=sys.stderr)
 
-        cumulative = query_cumulative_installs(cursor, args.listing_filter)
-        print(f"  Cumulative installs: {len(cumulative)} rows", file=sys.stderr)
+        app_state = query_application_state(cursor, args.listing_filter)
+        print(f"  APPLICATION_STATE: {len(app_state)} rows", file=sys.stderr)
 
-        daily_trends = query_daily_trends(cursor, args.listing_filter, args.days)
-        print(f"  Daily trends: {len(daily_trends)} rows", file=sys.stderr)
+        events = query_listing_events(cursor, args.listing_filter)
+        print(f"  LISTING_EVENTS_DAILY: {len(events)} rows", file=sys.stderr)
 
-        active = query_active_installs(cursor, args.listing_filter)
-        print(f"  Active installs: {len(active)} rows", file=sys.stderr)
-
-        activity = query_consumer_activity(cursor, args.listing_filter, args.days)
-        print(f"  Consumer activity: {len(activity)} rows", file=sys.stderr)
-
-        telemetry = query_listing_telemetry(cursor, args.listing_filter, args.days)
-        print(f"  Listing telemetry: {len(telemetry)} rows", file=sys.stderr)
+        subscriptions = build_subscriptions(app_state, events)
+        print(f"  Built {len(subscriptions)} subscription records", file=sys.stderr)
 
         report = {
             "export_timestamp": datetime.now(timezone.utc).isoformat(),
             "run_id": str(uuid.uuid4()),
             "listing_filter": args.listing_filter,
-            "lookback_days": args.days,
-            "metrics": {
-                "cumulative_installs": cumulative,
-                "daily_trends": daily_trends,
-                "active_installs": active,
-                "consumer_activity": activity,
-                "listing_telemetry": telemetry,
-            },
-            "summary": build_summary(cumulative, active, activity),
+            "subscription_count": len(subscriptions),
+            "subscriptions": subscriptions,
         }
 
         output_json = json.dumps(report, indent=2, default=str)

@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r metrics/requirements.txt
 
-      - name: Export fresh metrics (if triggered manually)
+      - name: Export fresh Snowflake data (if triggered manually)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -41,7 +41,6 @@ jobs:
         run: |
           python metrics/export_metrics.py \
             --listing-filter '%FALKORDB%' \
-            --days 90 \
             --output "${{ inputs.metrics_file || 'metrics_report.json' }}"
 
       - name: Download metrics artifact (if triggered by workflow_run)
@@ -53,7 +52,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true  # falls back to repo file if no artifact
 
-      - name: Push metrics to HubSpot
+      - name: Push subscriptions to HubSpot
         env:
           HUBSPOT_ACCESS_TOKEN: ${{ secrets.HUBSPOT_ACCESS_TOKEN }}
           METRICS_FILE: ${{ inputs.metrics_file || 'metrics_report.json' }}
@@ -61,6 +60,6 @@ jobs:
 
       - name: Show HubSpot push summary
         run: |
-          echo "### HubSpot Sync Complete" >> $GITHUB_STEP_SUMMARY
+          echo "### HubSpot Subscription Sync Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Metrics from \`${{ inputs.metrics_file || 'metrics_report.json' }}\` pushed to HubSpot." >> $GITHUB_STEP_SUMMARY
+          echo "14 fields per consumer pushed as HubSpot subscriptions from \`${{ inputs.metrics_file || 'metrics_report.json' }}\`." >> $GITHUB_STEP_SUMMARY
