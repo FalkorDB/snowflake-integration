@@ -82,6 +82,26 @@ def _headers(token: str) -> dict:
 
 def ensure_custom_properties(token: str) -> None:
     """Create custom subscription properties in HubSpot if they don't exist yet."""
+    # Step 1: Ensure the property group exists
+    group_url = f"{HUBSPOT_BASE}/crm/v3/properties/subscriptions/groups"
+    group_resp = requests.get(group_url, headers=_headers(token), timeout=15)
+    group_resp.raise_for_status()
+    existing_groups = {g["name"] for g in group_resp.json().get("results", [])}
+
+    group_name = "falkordb_snowflake"
+    if group_name not in existing_groups:
+        r = requests.post(
+            group_url,
+            headers=_headers(token),
+            json={"name": group_name, "label": "FalkorDB Snowflake"},
+            timeout=15,
+        )
+        if r.ok:
+            log.info("Created property group: %s", group_name)
+        else:
+            log.warning("Could not create property group: %s — %s", r.status_code, r.text)
+
+    # Step 2: Create custom properties in that group
     url = f"{HUBSPOT_BASE}/crm/v3/properties/subscriptions"
     resp = requests.get(url, headers=_headers(token), timeout=15)
     resp.raise_for_status()
@@ -95,7 +115,7 @@ def ensure_custom_properties(token: str) -> None:
             "label": prop["label"],
             "type": prop["type"],
             "fieldType": prop["fieldType"],
-            "groupName": "subscriptioninformation",
+            "groupName": group_name,
         }
         r = requests.post(url, headers=_headers(token), json=payload, timeout=15)
         if r.ok:
