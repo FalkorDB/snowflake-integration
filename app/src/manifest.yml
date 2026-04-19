@@ -5,7 +5,7 @@ version:
   name: V2
   label: "Version Two"
   comment: "Use MERGE for idempotent sample data loading and update documentation with MERGE examples"
-  patch: 18
+  patch: 19
 
 
 #artifacts that are distributed from this version of the package
