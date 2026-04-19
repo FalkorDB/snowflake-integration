@@ -26,4 +26,4 @@ spec:
       public: false
     - name: falkordb-browser
       port: 3000
-      public: false
+      public: true
