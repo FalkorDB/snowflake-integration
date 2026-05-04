@@ -50,6 +50,11 @@ FALKORDB_IMAGE="text-to-cypher:v0.1.5-beta.20"   # source image to pull
 TARGET_IMAGE_NAME="falkordb_server"              # image name expected by falkordb.yml
 TARGET_TAG="latest"                              # falkordb.yml has no tag -> defaults to 'latest'
 
+# Auto-update FalkorDB version in setup.sql so the app knows its own version
+SETUP_SQL="$(dirname "$0")/../app/src/setup.sql"
+sed -i '' "s|'falkordb_version', '[^']*'|'falkordb_version', '${FALKORDB_IMAGE}'|g" "$SETUP_SQL"
+echo "✅ Updated setup.sql with falkordb_version=${FALKORDB_IMAGE}"
+
 docker pull --platform linux/amd64 "falkordb/$FALKORDB_IMAGE" || {
 	echo "❌ Failed to pull FalkorDB Docker image: \"falkordb/$FALKORDB_IMAGE"
 	exit 1
