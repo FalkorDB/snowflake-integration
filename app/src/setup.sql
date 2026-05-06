@@ -54,16 +54,27 @@ GRANT USAGE ON PROCEDURE app_public.check_bound_table() TO APPLICATION ROLE app_
 GRANT USAGE ON PROCEDURE app_public.check_bound_table() TO APPLICATION ROLE app_user;
 
 -- Helper procedure to copy bound table data to stage
-CREATE OR REPLACE PROCEDURE app_public.copy_bound_table_to_stage(csv_filename VARCHAR)
+CREATE OR REPLACE PROCEDURE app_public.copy_bound_table_to_stage(stage_folder VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
-AS $$
+AS
+$$
+DECLARE
+  invalid_stage_folder EXCEPTION (-20001, 'Invalid stage folder name');
 BEGIN
+  IF (NOT REGEXP_LIKE(:stage_folder, '^[A-Za-z0-9_-]+$')) THEN
+    RAISE invalid_stage_folder;
+  END IF;
+
+  -- Ensure retries or extremely unlikely folder reuse cannot load stale part files.
+  EXECUTE IMMEDIATE 'REMOVE @app_public.staging/' || :stage_folder || '/';
+  
   -- Copy data directly from the reference (no need to query alias)
-  EXECUTE IMMEDIATE 'COPY INTO @app_public.staging/' || :csv_filename ||
+  EXECUTE IMMEDIATE 'COPY INTO @app_public.staging/' || :stage_folder || '/' ||
                     ' FROM reference(''consumer_data_table'')' ||
-                    ' FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE';
+                    ' FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)' ||
+                    ' INCLUDE_QUERY_ID = TRUE';
   RETURN 'Success';
 EXCEPTION
   WHEN OTHER THEN
@@ -154,37 +165,64 @@ BEGIN
         LANGUAGE JAVASCRIPT
         AS
         ''
-        var randomId = Math.abs(Math.floor(Math.random() * 1000000));
-        var csvFilename = "consumer_data_" + randomId + ".csv";
+        var uuidResult = snowflake.execute({sqlText: "SELECT REPLACE(UUID_STRING(), ''''-'''', ''''_'''')"});
+        uuidResult.next();
+        var stageFolder = "consumer_data_" + uuidResult.getColumnValue(1);
 
-        // Export bound table data to CSV using helper procedure
+        // Export bound table data to CSV part files using helper procedure
         try {
-            snowflake.execute({
+            var exportResult = snowflake.execute({
                 sqlText: "CALL app_public.copy_bound_table_to_stage(?)",
-                binds: [csvFilename]
+                binds: [stageFolder]
             });
+            if (!exportResult.next()) {
+                throw new Error("Export helper returned no result.");
+            }
+            var exportStatus = exportResult.getColumnValue(1);
+            if (typeof exportStatus === "string" && exportStatus.indexOf("ERROR:") === 0) {
+                throw new Error(exportStatus);
+            }
         } catch (err) {
             throw new Error("Failed to export data from bound table. Ensure a table is bound in the app configuration. Error: " + err.message);
         }
         
         try {
-            // Call load_csv_raw
-            var result = snowflake.execute({
-                sqlText: "SELECT app_public.load_csv_raw({''''graph_name'''': ?, ''''csv_file'''': ?, ''''cypher_query'''': ?})",
-                binds: [GRAPH_NAME, csvFilename, CYPHER_QUERY]
+            var listResult = snowflake.execute({
+                sqlText: "LIST @app_public.staging/" + stageFolder + "/"
             });
-            
-            // Clean up CSV file
+
+            var loadResults = [];
+            while (listResult.next()) {
+                var stagedName = listResult.getColumnValue(1);
+                var folderPrefix = stageFolder + "/";
+                var folderIndex = stagedName.indexOf(folderPrefix);
+                if (folderIndex < 0) {
+                    throw new Error("Unexpected staged file path: " + stagedName);
+                }
+                var csvFilename = stagedName.substring(folderIndex);
+
+                var result = snowflake.execute({
+                    sqlText: "SELECT app_public.load_csv_raw({''''graph_name'''': ?, ''''csv_file'''': ?, ''''cypher_query'''': ?})",
+                    binds: [GRAPH_NAME, csvFilename, CYPHER_QUERY]
+                });
+                loadResults.push(result.next() ? result.getColumnValue(1) : null);
+            }
+
+            if (loadResults.length === 0) {
+                throw new Error("No CSV part files were exported for the bound table.");
+            }
+
+            // Clean up CSV part files
             snowflake.execute({
-                sqlText: "REMOVE @app_public.staging/" + csvFilename
+                sqlText: "REMOVE @app_public.staging/" + stageFolder + "/"
             });
             
-            return result.next() ? result.getColumnValue(1) : null;
+            return loadResults.length === 1 ? loadResults[0] : loadResults;
         } catch (err) {
             // Clean up on error
             try {
                 snowflake.execute({
-                    sqlText: "REMOVE @app_public.staging/" + csvFilename
+                    sqlText: "REMOVE @app_public.staging/" + stageFolder + "/"
                 });
             } catch (cleanupErr) {
                 // Ignore cleanup errors
@@ -378,4 +416,3 @@ END
 $$;
 GRANT USAGE ON PROCEDURE app_public.load_sample_social_network() TO APPLICATION ROLE app_admin;
 GRANT USAGE ON PROCEDURE app_public.load_sample_social_network() TO APPLICATION ROLE app_user;
-
