@@ -63,7 +63,7 @@ $$
 DECLARE
   invalid_stage_folder EXCEPTION (-20001, 'Invalid stage folder name');
 BEGIN
-  IF (NOT REGEXP_LIKE(:stage_folder, '^[A-Za-z0-9_-]+$')) THEN
+  IF (NOT REGEXP_LIKE(stage_folder, '^[A-Za-z0-9_-]+$')) THEN
     RAISE invalid_stage_folder;
   END IF;
 
