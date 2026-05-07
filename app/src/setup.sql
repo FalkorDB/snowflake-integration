@@ -265,7 +265,7 @@ BEGIN
                 var rootCsvFilename = stagedFiles[copyIndex];
                 rootCsvFiles.push(rootCsvFilename);
                 snowflake.execute({
-                    sqlText: "COPY FILES INTO @app_public.staging FROM @app_public.staging/" + stageFolder + "/ FILES = (''" + rootCsvFilename + "'')"
+                    sqlText: "COPY FILES INTO @app_public.staging FROM @app_public.staging/" + stageFolder + "/ FILES = (''''" + rootCsvFilename + "'''')"
                 });
             }
 
