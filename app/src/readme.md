@@ -124,6 +124,15 @@ CALL <app_instance_name>.app_public.load_csv(
 **Note**:
 - The table is automatically retrieved from your Config UI binding—no need to specify it as a parameter
 - The Cypher query must include `LOAD CSV FROM 'file://...' AS row` to access the CSV data via `row[0]`, `row[1]`, etc.
+- The file name in the `file://...` clause is a placeholder; the app passes the actual staged CSV filename to the FalkorDB service for each load.
+- Large tables can be exported as multiple CSV parts. The app loads each part sequentially, so use idempotent Cypher such as `MERGE` for reload-safe imports.
+- If the bound table has no rows, `load_csv` returns an empty array and does not call the FalkorDB load endpoint.
+
+#### Multi-part CSV staging behavior
+
+`load_csv` exports the bound table into a unique folder under `@app_public.staging`. Snowflake may write one CSV file or split a large export into multiple part files. The app lists that folder, validates the generated file names, sorts them lexicographically for deterministic retries, and copies each part to the stage root before calling the FalkorDB service. The root copy preserves the existing service contract: `load_csv_raw` receives a flat `csv_file` name mounted at `/var/lib/FalkorDB/import`, not a nested stage path.
+
+After loading, the app removes both the temporary folder and the root-level copies. Cleanup failures are returned as errors so leaked staged files are visible. Multi-part loads are sequential, not transactional across all parts; if one part loads and a later part fails, the graph changes from the earlier part remain. Use `MERGE` or delete/recreate the graph when retrying loads that must be idempotent, and do not rely on source row order across generated part files.
 
 ### Step 6: Query Your Graph
 
@@ -188,7 +197,7 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 **`load_csv(graph_name VARCHAR, cypher_query VARCHAR)`**
 - Imports data from your bound table (configured during installation) into a graph structure
 - Uses the table reference you selected in the Config UI
-- Automatically stages data, loads it into FalkorDB, and cleans up temporary files
+- Automatically stages data, loads one or more CSV parts into FalkorDB, and cleans up temporary files
 - Example: `CALL app_public.load_csv('my_graph', 'LOAD CSV FROM ''file://consumer_data.csv'' AS row MERGE (n:Node {prop: row[0]})');`
 - **Note**: The Cypher query must include `LOAD CSV FROM 'file://...' AS row` clause to access CSV columns via `row[0]`, `row[1]`, etc.
 
@@ -245,8 +254,8 @@ FalkorDB operates entirely within your Snowflake environment using Snowpark Cont
    - Creates wrapper procedures for graph operations
 
 3. **Data Loading**: When you call `load_csv()`, the app:
-   - Exports your specified Snowflake table to a CSV file in a staging area
-   - Mounts the CSV file to the FalkorDB container
+   - Exports your specified Snowflake table to one or more CSV files in a staging area
+   - Mounts the CSV files to the FalkorDB container
    - Executes your Cypher query to map CSV data into graph structures
    - Automatically cleans up temporary files
 

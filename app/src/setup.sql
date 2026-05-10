@@ -54,16 +54,27 @@ GRANT USAGE ON PROCEDURE app_public.check_bound_table() TO APPLICATION ROLE app_
 GRANT USAGE ON PROCEDURE app_public.check_bound_table() TO APPLICATION ROLE app_user;
 
 -- Helper procedure to copy bound table data to stage
-CREATE OR REPLACE PROCEDURE app_public.copy_bound_table_to_stage(csv_filename VARCHAR)
+-- The caller owns the stage folder lifecycle. This helper only writes the
+-- bound-table export into the supplied folder so direct callers cannot
+-- accidentally delete pre-existing staged files.
+CREATE OR REPLACE PROCEDURE app_public.copy_bound_table_to_stage(stage_folder VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
-AS $$
+AS
+$$
+DECLARE
+  invalid_stage_folder EXCEPTION (-20001, 'Invalid stage folder name');
 BEGIN
+  IF (stage_folder IS NULL OR NOT REGEXP_LIKE(stage_folder, '^[A-Za-z0-9_-]+$')) THEN
+    RAISE invalid_stage_folder;
+  END IF;
+
   -- Copy data directly from the reference (no need to query alias)
-  EXECUTE IMMEDIATE 'COPY INTO @app_public.staging/' || :csv_filename ||
+  EXECUTE IMMEDIATE 'COPY INTO @app_public.staging/' || :stage_folder || '/' ||
                     ' FROM reference(''consumer_data_table'')' ||
-                    ' FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE';
+                    ' FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)' ||
+                    ' INCLUDE_QUERY_ID = TRUE';
   RETURN 'Success';
 EXCEPTION
   WHEN OTHER THEN
@@ -148,46 +159,134 @@ BEGIN
         ENDPOINT=''api''
         AS ''/load_csv''';
     
-    -- Create wrapper procedure for load_csv, load the data from bound consumer_table reference as csv file to staging area and then call load_csv_raw
+    -- Create wrapper procedure for load_csv, load the data from bound consumer_table reference as csv files to staging area and then call load_csv_raw
     EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.load_csv(graph_name VARCHAR, cypher_query VARCHAR)
         RETURNS VARIANT
         LANGUAGE JAVASCRIPT
         AS
         ''
-        var randomId = Math.abs(Math.floor(Math.random() * 1000000));
-        var csvFilename = "consumer_data_" + randomId + ".csv";
+        /*
+         * Multi-part staging flow:
+         * 1. Export the bound table into a UUID-named folder under app_public.staging.
+         *    COPY INTO may create multiple CSV part files for large tables.
+         * 2. LIST the folder, validate each generated basename, and sort the names
+         *    for deterministic retry behavior.
+         * 3. COPY FILES each part back to the stage root before calling load_csv_raw.
+         *    The FalkorDB service already expects csv_file to be a flat filename in
+         *    /var/lib/FalkorDB/import, so nested stage paths are intentionally hidden.
+         *    INCLUDE_QUERY_ID in COPY INTO keeps these root filenames unique across
+         *    concurrent load_csv calls.
+         * 4. Remove both the temporary folder and root copies. Cleanup failures are
+         *    surfaced to the caller so leaked stage files are visible.
+         */
+        var uuidResult = snowflake.execute({sqlText: "SELECT REPLACE(UUID_STRING(), ''''-'''', ''''_'''')"});
+        uuidResult.next();
+        var stageFolder = "consumer_data_" + uuidResult.getColumnValue(1);
+        var rootCsvFiles = [];
 
-        // Export bound table data to CSV using helper procedure
+        function removeStagePath(path) {
+            snowflake.execute({sqlText: "REMOVE " + path});
+        }
+
+        function cleanupTemporaryFiles() {
+            var cleanupErrors = [];
+            try {
+                removeStagePath("@app_public.staging/" + stageFolder + "/");
+            } catch (folderErr) {
+                cleanupErrors.push("folder cleanup failed: " + folderErr.message);
+            }
+
+            for (var i = 0; i < rootCsvFiles.length; i++) {
+                try {
+                    removeStagePath("@app_public.staging/" + rootCsvFiles[i]);
+                } catch (fileErr) {
+                    cleanupErrors.push("file cleanup failed for " + rootCsvFiles[i] + ": " + fileErr.message);
+                }
+            }
+
+            return cleanupErrors;
+        }
+
+        // Export bound table data to CSV part files using helper procedure
         try {
-            snowflake.execute({
+            var exportResult = snowflake.execute({
                 sqlText: "CALL app_public.copy_bound_table_to_stage(?)",
-                binds: [csvFilename]
+                binds: [stageFolder]
             });
+            if (!exportResult.next()) {
+                throw new Error("Export helper returned no result.");
+            }
+            var exportStatus = exportResult.getColumnValue(1);
+            if (typeof exportStatus === "string" && exportStatus.indexOf("ERROR:") === 0) {
+                throw new Error(exportStatus);
+            }
         } catch (err) {
-            throw new Error("Failed to export data from bound table. Ensure a table is bound in the app configuration. Error: " + err.message);
+            var exportCleanupErrors = cleanupTemporaryFiles();
+            var exportMessage = "Failed to export data from bound table. Ensure a table is bound in the app configuration. Error: " + err.message;
+            if (exportCleanupErrors.length > 0) {
+                exportMessage += " Cleanup also failed: " + exportCleanupErrors.join("; ");
+            }
+            throw new Error(exportMessage);
         }
         
         try {
-            // Call load_csv_raw
-            var result = snowflake.execute({
-                sqlText: "SELECT app_public.load_csv_raw({''''graph_name'''': ?, ''''csv_file'''': ?, ''''cypher_query'''': ?})",
-                binds: [GRAPH_NAME, csvFilename, CYPHER_QUERY]
+            var listResult = snowflake.execute({
+                sqlText: "LIST @app_public.staging/" + stageFolder + "/"
             });
-            
-            // Clean up CSV file
-            snowflake.execute({
-                sqlText: "REMOVE @app_public.staging/" + csvFilename
-            });
-            
-            return result.next() ? result.getColumnValue(1) : null;
-        } catch (err) {
-            // Clean up on error
-            try {
+
+            var stagedFiles = [];
+            var loadResults = [];
+            while (listResult.next()) {
+                var stagedName = listResult.getColumnValue(1);
+                var folderPrefix = stageFolder + "/";
+                var folderIndex = stagedName.lastIndexOf(folderPrefix);
+                if (folderIndex < 0) {
+                    throw new Error("Unexpected staged file path: " + stagedName);
+                }
+                var csvFilename = stagedName.substring(folderIndex + folderPrefix.length);
+                if (!/^[A-Za-z0-9_.-]+$/.test(csvFilename)) {
+                    throw new Error("Unexpected staged file name: " + csvFilename);
+                }
+                stagedFiles.push(csvFilename);
+            }
+
+            if (stagedFiles.length === 0) {
+                var emptyCleanupErrors = cleanupTemporaryFiles();
+                if (emptyCleanupErrors.length > 0) {
+                    throw new Error("No rows were exported, and cleanup failed: " + emptyCleanupErrors.join("; "));
+                }
+                return [];
+            }
+
+            stagedFiles.sort();
+
+            // Root filenames stay invocation-unique because COPY INTO uses INCLUDE_QUERY_ID.
+            for (var copyIndex = 0; copyIndex < stagedFiles.length; copyIndex++) {
+                var rootCsvFilename = stagedFiles[copyIndex];
+                rootCsvFiles.push(rootCsvFilename);
                 snowflake.execute({
-                    sqlText: "REMOVE @app_public.staging/" + csvFilename
+                    sqlText: "COPY FILES INTO @app_public.staging FROM @app_public.staging/" + stageFolder + "/ FILES = (''''" + rootCsvFilename + "'''')"
                 });
-            } catch (cleanupErr) {
-                // Ignore cleanup errors
+            }
+
+            for (var loadIndex = 0; loadIndex < rootCsvFiles.length; loadIndex++) {
+                var result = snowflake.execute({
+                    sqlText: "SELECT app_public.load_csv_raw({''''graph_name'''': ?, ''''csv_file'''': ?, ''''cypher_query'''': ?})",
+                    binds: [GRAPH_NAME, rootCsvFiles[loadIndex], CYPHER_QUERY]
+                });
+                loadResults.push(result.next() ? result.getColumnValue(1) : null);
+            }
+
+            var cleanupErrors = cleanupTemporaryFiles();
+            if (cleanupErrors.length > 0) {
+                throw new Error("Loaded CSV data but failed to clean up temporary stage files: " + cleanupErrors.join("; "));
+            }
+            
+            return loadResults.length === 1 ? loadResults[0] : loadResults;
+        } catch (err) {
+            var errorCleanupErrors = cleanupTemporaryFiles();
+            if (errorCleanupErrors.length > 0) {
+                throw new Error(err.message + " Cleanup also failed: " + errorCleanupErrors.join("; "));
             }
             throw err;
         }
@@ -378,4 +477,3 @@ END
 $$;
 GRANT USAGE ON PROCEDURE app_public.load_sample_social_network() TO APPLICATION ROLE app_admin;
 GRANT USAGE ON PROCEDURE app_public.load_sample_social_network() TO APPLICATION ROLE app_user;
-

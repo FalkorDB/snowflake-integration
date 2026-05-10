@@ -94,7 +94,20 @@ CALL <app_instance_name>.app_public.load_csv(
 - The table is automatically retrieved from your Config UI binding—no need to specify it as a parameter
 - The Cypher query must include `LOAD CSV FROM 'file://consumer_data.csv' AS row` to access the CSV data
 - Access columns using `row[0]`, `row[1]`, `row[2]`, etc. (0-indexed)
+- The file name in the `file://...` clause is a placeholder; the app passes the actual staged CSV filename to the FalkorDB service for each load.
 - Use MERGE instead of CREATE to safely reload data without duplicates
+- Large bound tables can be exported as multiple CSV parts. The app loads each part sequentially, sorted lexicographically by staged file name.
+- If the bound table has no rows, `load_csv` returns an empty array and does not call the FalkorDB load endpoint.
+
+### Multi-part CSV staging behavior
+
+`load_csv` exports the bound table into a unique folder under `@app_public.staging`. Snowflake may write one CSV file or split a large export into multiple part files. The app lists that folder, validates each generated filename, sorts the names lexicographically for deterministic retries, and copies each part to the stage root before calling the FalkorDB service.
+
+The stage-root copy is intentional. The container mounts `@app_public.staging` at `/var/lib/FalkorDB/import`, and the existing `load_csv_raw` service contract expects `csv_file` to be a flat filename in that import directory. The generated folder path is kept internal to the Snowflake wrapper so existing Cypher examples with `LOAD CSV FROM 'file://consumer_data.csv'` continue to work as a placeholder while the service receives the actual staged filename for each part.
+
+After loading, the app removes both the temporary export folder and the root-level copies used by the service. If cleanup fails, `load_csv` returns an error that includes the cleanup failure instead of silently leaving files behind. If the bound table has no rows, there are no part files to load; the procedure removes the temporary folder and returns `[]`.
+
+Multi-part loads are sequential and are not rolled back as a single unit. If one part succeeds and a later part fails, graph changes from the successful part remain. Prefer idempotent `MERGE` queries for retry-safe imports, and avoid relying on source row order across generated part files.
 
 ### Querying Graphs
 
@@ -283,6 +296,8 @@ CALL <app_instance_name>.app_public.load_csv(
 **CREATE vs MERGE**:
 - **CREATE**: Always creates new nodes (use for one-time bulk loads)
 - **MERGE**: Matches existing or creates new (use for incremental updates)
+
+Large bound tables may load as multiple CSV parts. If one part succeeds and a later part fails, already-loaded graph changes are not rolled back, so prefer idempotent `MERGE` queries for any load that may be retried.
 
 **Alternative**: If you need to fully replace data, delete and recreate:
 
