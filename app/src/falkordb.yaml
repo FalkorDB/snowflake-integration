@@ -4,6 +4,8 @@ spec:
       image: /falkordb_app/napp/img_repo/falkordb_server:latest
       env:
         NEXTAUTH_URL: auto
+        AUTH_TRUST_HOST: "true"
+        TRUST_PROXY_HEADERS: "true"
       volumeMounts:
         - name: shared-staging
           mountPath: /var/lib/FalkorDB/import
