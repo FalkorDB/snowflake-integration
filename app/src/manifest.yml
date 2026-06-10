@@ -4,8 +4,8 @@ manifest_version: 1
 version:
   name: V2
   label: "Version Two"
-  comment: "Trust Snowpark proxy headers for FalkorDB Browser authentication"
-  patch: 20
+  comment: "Fix FalkorDB Browser auth URL handling behind Snowflake proxy"
+  patch: 32
 
 
 #artifacts that are distributed from this version of the package

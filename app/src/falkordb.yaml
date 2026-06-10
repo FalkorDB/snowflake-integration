@@ -2,8 +2,11 @@ spec:
   containers:
     - name: falkordb-server
       image: /falkordb_app/napp/img_repo/falkordb_server:latest
+      command:
+        - /bin/bash
+        - -lc
+        - sed -i -e '/^ALLOWED_ORIGINS=/d' -e '/^AUTH_URL=/d' -e '/^NEXTAUTH_URL=/d' /var/lib/falkordb/browser/.env.local && exec /entrypoint.sh
       env:
-        NEXTAUTH_URL: auto
         AUTH_TRUST_HOST: "true"
         TRUST_PROXY_HEADERS: "true"
       volumeMounts:
