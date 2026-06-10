@@ -75,7 +75,28 @@ CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
 
 **Default Resource Configuration**:
 - **Compute Pool**: `CPU_X64_S` instance family (4 CPU, 8GB RAM), 1 node, auto-resume enabled
+- **FalkorDB Container**: `SMALL` profile by default, requests 0.5 CPU / 512MB RAM and can use up to 1 CPU / 1GB RAM
 - **Warehouse**: `XSMALL` size, initially suspended, auto-suspend after 300 seconds
+
+**Resource Profiles**: For larger graphs, start the app with a larger FalkorDB container profile:
+
+```sql
+-- SMALL: 0.5 CPU / 512MB request, 1 CPU / 1GB limit
+CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
+
+-- MEDIUM: 1 CPU / 2GB request, 2 CPU / 4GB limit
+CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'MEDIUM');
+
+-- LARGE: 2 CPU / 4GB request, 4 CPU / 6GB limit
+CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'LARGE');
+```
+
+To change profiles after the service is already running, stop it first:
+
+```sql
+CALL <app_instance_name>.app_public.stop_app();
+CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'LARGE');
+```
 
 **Advanced**: If you need custom resource sizes, create them manually **before** calling `start_app()`:
 
@@ -126,13 +147,14 @@ CALL <app_instance_name>.app_public.load_csv(
 - The Cypher query must include `LOAD CSV FROM 'file://...' AS row` to access the CSV data via `row[0]`, `row[1]`, etc.
 - The file name in the `file://...` clause is a placeholder; the app passes the actual staged CSV filename to the FalkorDB service for each load.
 - Large tables can be exported as multiple CSV parts. The app loads each part sequentially, so use idempotent Cypher such as `MERGE` for reload-safe imports.
+- For large `MERGE` loads, create an index on the matched label/property before loading, for example: `CALL <app_instance_name>.app_public.graph_query('social_network', 'CREATE INDEX ON :Person(id)');`
 - If the bound table has no rows, `load_csv` returns an empty array and does not call the FalkorDB load endpoint.
 
 #### Multi-part CSV staging behavior
 
 `load_csv` exports the bound table into a unique folder under `@app_public.staging`. Snowflake may write one CSV file or split a large export into multiple part files. The app lists that folder, validates the generated file names, sorts them lexicographically for deterministic retries, and copies each part to the stage root before calling the FalkorDB service. The root copy preserves the existing service contract: `load_csv_raw` receives a flat `csv_file` name mounted at `/var/lib/FalkorDB/import`, not a nested stage path.
 
-After loading, the app removes both the temporary folder and the root-level copies. Cleanup failures are returned as errors so leaked staged files are visible. Multi-part loads are sequential, not transactional across all parts; if one part loads and a later part fails, the graph changes from the earlier part remain. Use `MERGE` or delete/recreate the graph when retrying loads that must be idempotent, and do not rely on source row order across generated part files.
+After loading, the app removes both the temporary folder and the root-level copies. Cleanup failures are returned as errors so leaked staged files are visible. Multi-part loads are sequential, not transactional across all parts; if one part loads and a later part fails, the graph changes from the earlier part remain. Use `MERGE` or delete/recreate the graph when retrying loads that must be idempotent, and do not rely on source row order across generated part files. When using `MERGE` on large multi-part loads, create an index on the matched key first, such as `CREATE INDEX ON :Airport(id)`, to avoid scanning existing nodes for each row in later parts.
 
 ### Step 6: Query Your Graph
 
@@ -191,8 +213,15 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 **`start_app(poolname VARCHAR, whname VARCHAR)`**
 - Initializes the FalkorDB service with specified compute pool and warehouse names
 - Automatically creates the compute pool (CPU_X64_S) and warehouse (XSMALL) if they don't exist
+- Uses the `SMALL` FalkorDB container profile
 - If resources already exist, uses them instead of creating new ones
 - Example: `CALL app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');`
+
+**`start_app_with_profile(poolname VARCHAR, whname VARCHAR, resource_profile VARCHAR)`**
+- Initializes the FalkorDB service with a selected container resource profile: `SMALL`, `MEDIUM`, or `LARGE`
+- Use `MEDIUM` or `LARGE` for larger graph loads that need more FalkorDB memory
+- Requires the service not to already exist; call `stop_app()` first when changing profiles
+- Example: `CALL app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'LARGE');`
 
 **`load_csv(graph_name VARCHAR, cypher_query VARCHAR)`**
 - Imports data from your bound table (configured during installation) into a graph structure

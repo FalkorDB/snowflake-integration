@@ -36,6 +36,18 @@ CALL <app_instance_name>.app_public.get_service_status();
 
 Wait for the service status to show `READY` before proceeding (typically 2-3 minutes).
 
+Default resources use a `CPU_X64_S` compute pool with the `SMALL` FalkorDB container profile: 0.5 CPU / 512MB RAM requested and 1 CPU / 1GB RAM limit. For larger graph loads, start the app with a larger profile:
+
+```sql
+-- MEDIUM: 1 CPU / 2GB request, 2 CPU / 4GB limit
+CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'MEDIUM');
+
+-- LARGE: 2 CPU / 4GB request, 4 CPU / 6GB limit
+CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'LARGE');
+```
+
+To change profiles after the service is already running, call `stop_app()` first, then start with the desired profile.
+
 ## Basic Usage
 
 ### Creating a Graph from Direct Queries
@@ -97,6 +109,7 @@ CALL <app_instance_name>.app_public.load_csv(
 - The file name in the `file://...` clause is a placeholder; the app passes the actual staged CSV filename to the FalkorDB service for each load.
 - Use MERGE instead of CREATE to safely reload data without duplicates
 - Large bound tables can be exported as multiple CSV parts. The app loads each part sequentially, sorted lexicographically by staged file name.
+- For large `MERGE` loads, create an index on the matched label/property before loading, for example: `CALL <app_instance_name>.app_public.graph_query('my_graph', 'CREATE INDEX ON :Customer(id)');`
 - If the bound table has no rows, `load_csv` returns an empty array and does not call the FalkorDB load endpoint.
 
 ### Multi-part CSV staging behavior
@@ -107,7 +120,7 @@ The stage-root copy is intentional. The container mounts `@app_public.staging` a
 
 After loading, the app removes both the temporary export folder and the root-level copies used by the service. If cleanup fails, `load_csv` returns an error that includes the cleanup failure instead of silently leaving files behind. If the bound table has no rows, there are no part files to load; the procedure removes the temporary folder and returns `[]`.
 
-Multi-part loads are sequential and are not rolled back as a single unit. If one part succeeds and a later part fails, graph changes from the successful part remain. Prefer idempotent `MERGE` queries for retry-safe imports, and avoid relying on source row order across generated part files.
+Multi-part loads are sequential and are not rolled back as a single unit. If one part succeeds and a later part fails, graph changes from the successful part remain. Prefer idempotent `MERGE` queries for retry-safe imports, and avoid relying on source row order across generated part files. When using `MERGE` on large multi-part loads, create an index on the matched key first, such as `CREATE INDEX ON :Airport(id)`, to avoid scanning existing nodes for each row in later parts.
 
 ### Querying Graphs
 
@@ -298,6 +311,15 @@ CALL <app_instance_name>.app_public.load_csv(
 - **MERGE**: Matches existing or creates new (use for incremental updates)
 
 Large bound tables may load as multiple CSV parts. If one part succeeds and a later part fails, already-loaded graph changes are not rolled back, so prefer idempotent `MERGE` queries for any load that may be retried.
+
+For large `MERGE` loads, create an index on the property used to match nodes before calling `load_csv`. Without an index, later CSV parts can slow down because FalkorDB must scan the nodes already loaded by earlier parts.
+
+```sql
+CALL <app_instance_name>.app_public.graph_query(
+  'my_graph',
+  'CREATE INDEX ON :Person(id)'
+);
+```
 
 **Alternative**: If you need to fully replace data, delete and recreate:
 

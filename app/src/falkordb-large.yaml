@@ -1,0 +1,36 @@
+spec:
+  containers:
+    - name: falkordb-server
+      image: /falkordb_app/napp/img_repo/falkordb_server:latest
+      command:
+        - /bin/bash
+        - -lc
+        - sed -i -e '/^ALLOWED_ORIGINS=/d' -e '/^AUTH_URL=/d' -e '/^NEXTAUTH_URL=/d' /var/lib/falkordb/browser/.env.local && exec /entrypoint.sh
+      env:
+        AUTH_TRUST_HOST: "true"
+        TRUST_PROXY_HEADERS: "true"
+      volumeMounts:
+        - name: shared-staging
+          mountPath: /var/lib/FalkorDB/import
+      resources:
+        requests:
+          cpu: 2.0
+          memory: 4G
+        limits:
+          cpu: 4.0
+          memory: 6G
+  volumes:
+    - name: shared-staging
+      source: "@app_public.staging"
+      uid: 1000
+      gid: 1000
+  endpoints:
+    - name: api
+      port: 8080
+      public: false
+    - name: falkordb
+      port: 6379
+      public: false
+    - name: falkordb-browser
+      port: 3000
+      public: true
