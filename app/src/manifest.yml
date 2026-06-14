@@ -4,8 +4,8 @@ manifest_version: 1
 version:
   name: V2
   label: "Version Two"
-  comment: "Fix FalkorDB Browser auth URL handling behind Snowflake proxy"
-  patch: 32
+  comment: "Add FalkorDB Cortex Agent integration"
+  patch: 33
 
 
 #artifacts that are distributed from this version of the package
@@ -23,6 +23,8 @@ privileges:
       description: "Allows application to create compute pools for running services"
  - CREATE WAREHOUSE:
       description: "Allows application to create warehouses for query processing"
+ - CREATE AGENT:
+      description: "Allows application to create Cortex Agents for natural-language graph workflows"
 
 references:
   - consumer_data_table:
