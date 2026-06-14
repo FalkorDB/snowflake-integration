@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export Snowflake Marketplace data for 14 HubSpot subscription fields.
+"""Export Snowflake Marketplace data for HubSpot subscription fields.
 
 Queries only the Snowflake provider views needed for the field mapping
 defined in hubspot_field_mapping.json and outputs one record per consumer.
@@ -7,12 +7,13 @@ defined in hubspot_field_mapping.json and outputs one record per consumer.
 Sources:
   - APPLICATION_STATE  → cloud_region, cloud_vendor, cloud_version,
                           hs_recurring_billing_start_date, hs_status,
-                          db_name, hs_name, hs_last_modified_at
+                          db_name, cloud_db_name, hs_name, hs_last_modified_at
   - LISTING_EVENTS_DAILY → deployment_type, subscription_plan, email
 
 Hardcoded (no Snowflake source):
   - cloud_provider = "snowflake"
   - node_instance_type = "none"
+  - subscription_id_omnistrate = ""
   - falkordb_version = "need to add this" (until app_metadata is deployed)
 
 Environment variables (required):
@@ -28,9 +29,11 @@ Authentication (one of):
 import argparse
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import snowflake.connector
 from cryptography.hazmat.backends import default_backend
@@ -113,7 +116,7 @@ def query_application_state(cursor, listing_filter):
     """Pull per-consumer install data from APPLICATION_STATE.
 
     Fields used for: cloud_region, cloud_vendor, cloud_version,
-    hs_recurring_billing_start_date, hs_status, db_name, hs_name,
+    hs_recurring_billing_start_date, hs_status, db_name, cloud_db_name, hs_name,
     hs_last_modified_at.
     """
     return run_query(
@@ -189,14 +192,14 @@ def transform_status(upgrade_state: str) -> str:
 
 
 def transform_deployment_type(event_type: str) -> str:
-    """TRIAL → free, PURCHASE → paid, GET → free"""
-    mapping = {"TRIAL": "free", "PURCHASE": "paid", "GET": "free"}
+    """TRIAL → free, PURCHASE → standalone, GET → free"""
+    mapping = {"TRIAL": "free", "PURCHASE": "standalone", "GET": "free"}
     return mapping.get(str(event_type or "").upper(), "free")
 
 
 def transform_subscription_plan(event_type: str) -> str:
-    """TRIAL → falkordb_free, PURCHASE → falkordb_paid"""
-    mapping = {"TRIAL": "falkordb_free", "PURCHASE": "falkordb_paid", "GET": "falkordb_free"}
+    """TRIAL → falkordb_free, PURCHASE → falkordb_pro, GET → falkordb_free"""
+    mapping = {"TRIAL": "falkordb_free", "PURCHASE": "falkordb_pro", "GET": "falkordb_free"}
     return mapping.get(str(event_type or "").upper(), "falkordb_free")
 
 
@@ -211,12 +214,21 @@ def transform_hs_name(locator: str) -> str:
     return f"instance-{locator.lower()}" if locator else ""
 
 
+def get_falkordb_version() -> str:
+    setup_sql = Path(__file__).resolve().parents[1] / "app" / "src" / "setup.sql"
+    setup_text = setup_sql.read_text()
+    match = re.search(r"'falkordb_version'\s+AS\s+key,\s*'([^']+)'", setup_text, re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Could not find falkordb_version in {setup_sql}")
+    return match.group(1)
+
+
 # ---------------------------------------------------------------------------
 # Build per-consumer subscription records
 # ---------------------------------------------------------------------------
 
-def build_subscriptions(app_state_rows, events_rows):
-    """Merge APPLICATION_STATE + LISTING_EVENTS_DAILY into 14-field records per consumer.
+def build_subscriptions(app_state_rows, events_rows, falkordb_version):
+    """Merge APPLICATION_STATE + LISTING_EVENTS_DAILY into HubSpot records per consumer.
 
     Key = consumer_account_locator (stable unique identifier).
     """
@@ -255,11 +267,14 @@ def build_subscriptions(app_state_rows, events_rows):
                 install.get("current_version"), install.get("current_patch")
             ),
             "cloud_provider": "snowflake",
-            "falkordb_version": "need to add this",
+            "falkordb_version": falkordb_version,
             "hs_recurring_billing_start_date": transform_date(created_on),
             "hs_status": transform_status(install.get("upgrade_state")),
             "db_name": install.get("consumer_account_name", ""),
+            "cloud_db_name": install.get("consumer_account_name", ""),
             "hs_name": transform_hs_name(locator),
+            "node_instance_type": "none",
+            "subscription_id_omnistrate": "",
             "deployment_type": transform_deployment_type(event_type),
             "hs_last_modified_at": transform_date(last_upgraded) or transform_date(created_on),
             "subscription_plan": transform_subscription_plan(event_type),
@@ -307,7 +322,10 @@ def main():
         events = query_listing_events(cursor, args.listing_filter)
         print(f"  LISTING_EVENTS_DAILY: {len(events)} rows", file=sys.stderr)
 
-        subscriptions = build_subscriptions(app_state, events)
+        falkordb_version = get_falkordb_version()
+        print(f"  FalkorDB version: {falkordb_version}", file=sys.stderr)
+
+        subscriptions = build_subscriptions(app_state, events, falkordb_version)
         print(f"  Built {len(subscriptions)} subscription records", file=sys.stderr)
 
         report = {

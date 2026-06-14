@@ -3,14 +3,14 @@
 push_to_hubspot.py
 
 Reads the subscription export (produced by export_metrics.py) and upserts
-one HubSpot subscription record per Snowflake consumer using the exact
-14 fields defined in hubspot_field_mapping.json.
+one HubSpot subscription record per Snowflake consumer.
 
 HubSpot fields pushed per consumer:
   cloud_region, cloud_vendor, cloud_version, cloud_provider,
   falkordb_version, hs_recurring_billing_start_date, hs_status,
-  db_name, hs_name, node_instance_type, deployment_type,
-  hs_last_modified_at, subscription_plan, email
+  db_name, cloud_db_name, hs_name, node_instance_type,
+  subscription_id_omnistrate, deployment_type, hs_last_modified_at,
+  subscription_plan, email
 
 Required env var:
   HUBSPOT_ACCESS_TOKEN - Private App token from HubSpot
@@ -38,7 +38,8 @@ log = logging.getLogger(__name__)
 
 HUBSPOT_BASE = "https://api.hubapi.com"
 
-# The 14 HubSpot subscription fields we manage
+# HubSpot subscription fields we manage. Keep legacy names and add aliases
+# used by the current HubSpot record layout.
 SUBSCRIPTION_FIELDS = [
     "cloud_region",
     "cloud_vendor",
@@ -48,7 +49,10 @@ SUBSCRIPTION_FIELDS = [
     "hs_recurring_billing_start_date",
     "hs_status",
     "db_name",
+    "cloud_db_name",
     "hs_name",
+    "node_instance_type",
+    "subscription_id_omnistrate",
     "deployment_type",
     "hs_last_modified_at",
     "subscription_plan",
@@ -63,6 +67,9 @@ CUSTOM_SUBSCRIPTION_PROPERTIES = [
     {"name": "cloud_provider",       "label": "Cloud Provider",        "type": "string",   "fieldType": "text"},
     {"name": "falkordb_version",     "label": "FalkorDB Version",      "type": "string",   "fieldType": "text"},
     {"name": "db_name",              "label": "DB Name",               "type": "string",   "fieldType": "text"},
+    {"name": "cloud_db_name",        "label": "cloud_db_name",         "type": "string",   "fieldType": "text"},
+    {"name": "node_instance_type",   "label": "Node instance type",    "type": "string",   "fieldType": "text"},
+    {"name": "subscription_id_omnistrate", "label": "Subscription Id (Omnistrate)", "type": "string", "fieldType": "text"},
     {"name": "deployment_type",      "label": "Deployment Type",       "type": "string",   "fieldType": "text"},
     {"name": "subscription_plan",    "label": "Subscription Plan",     "type": "string",   "fieldType": "text"},
     {"name": "email",                "label": "Consumer Email",        "type": "string",   "fieldType": "text"},
@@ -189,7 +196,7 @@ def push_subscriptions(token: str, subscriptions: list[dict]) -> None:
             log.warning("Skipping subscription with empty hs_name: %s", sub)
             continue
 
-        # Only send the 14 fields we care about
+        # Only send the fields we manage.
         properties = {field: str(sub.get(field, "")) for field in SUBSCRIPTION_FIELDS}
         upsert_subscription(token, properties)
 

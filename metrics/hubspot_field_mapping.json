@@ -1,0 +1,135 @@
+{
+  "description": "Snowflake → HubSpot field mapping for FalkorDB Snowflake Native App subscriptions",
+  "field_mapping": [
+    {
+      "hubspot_field": "cloud_region",
+      "snowflake_source": "APPLICATION_STATE.consumer_snowflake_region",
+      "transform": "lowercase, strip prefix (e.g. AWS_US_WEST_2 → us-west-2)",
+      "example_snowflake": "AWS_US_WEST_2",
+      "example_hubspot": "us-west-2"
+    },
+    {
+      "hubspot_field": "cloud_vendor",
+      "snowflake_source": "APPLICATION_STATE.consumer_snowflake_region",
+      "transform": "extract prefix before first underscore, lowercase",
+      "example_snowflake": "AWS_US_WEST_2",
+      "example_hubspot": "aws"
+    },
+    {
+      "hubspot_field": "cloud_version",
+      "snowflake_source": "APPLICATION_STATE.current_version + APPLICATION_STATE.current_patch",
+      "transform": "concatenate version and patch",
+      "example_snowflake": "V2 + 18",
+      "example_hubspot": "V2.18"
+    },
+    {
+      "hubspot_field": "cloud_provider",
+      "snowflake_source": null,
+      "transform": "hardcode — always 'snowflake' for this integration",
+      "example_snowflake": null,
+      "example_hubspot": "snowflake"
+    },
+    {
+      "hubspot_field": "falkordb_version",
+      "snowflake_source": "app/src/setup.sql app_public.app_metadata seed value",
+      "transform": "direct from text-to-cypher image version",
+      "example_snowflake": "text-to-cypher:v0.1.16",
+      "example_hubspot": "text-to-cypher:v0.1.16"
+    },
+    {
+      "hubspot_field": "hs_recurring_billing_start_date",
+      "snowflake_source": "APPLICATION_STATE.created_on",
+      "transform": "ISO date string",
+      "example_snowflake": "2026-01-25T00:00:00",
+      "example_hubspot": "2026-01-25"
+    },
+    {
+      "hubspot_field": "hs_status",
+      "snowflake_source": "APPLICATION_STATE.upgrade_state",
+      "transform": "COMPLETE → active, DISABLED → canceled, PENDING → scheduled",
+      "example_snowflake": "COMPLETE",
+      "example_hubspot": "active"
+    },
+    {
+      "hubspot_field": "db_name",
+      "snowflake_source": "APPLICATION_STATE.consumer_account_name",
+      "transform": "direct",
+      "example_snowflake": "YSB30315",
+      "example_hubspot": "YSB30315"
+    },
+    {
+      "hubspot_field": "cloud_db_name",
+      "snowflake_source": "APPLICATION_STATE.consumer_account_name",
+      "transform": "direct alias of db_name for the current HubSpot subscription layout",
+      "example_snowflake": "YSB30315",
+      "example_hubspot": "YSB30315"
+    },
+    {
+      "hubspot_field": "hs_name",
+      "snowflake_source": "APPLICATION_STATE.consumer_account_locator",
+      "transform": "generate: instance- + lowercase locator",
+      "example_snowflake": "FLB05576",
+      "example_hubspot": "instance-flb05576"
+    },
+    {
+      "hubspot_field": "node_instance_type",
+      "snowflake_source": null,
+      "transform": "hardcode — 'none' until instance type is available from Snowflake/Omnistrate",
+      "example_snowflake": null,
+      "example_hubspot": "none"
+    },
+    {
+      "hubspot_field": "subscription_id_omnistrate",
+      "snowflake_source": null,
+      "transform": "empty until Omnistrate subscription id is available",
+      "example_snowflake": null,
+      "example_hubspot": ""
+    },
+    {
+      "hubspot_field": "deployment_type",
+      "snowflake_source": "LISTING_EVENTS_DAILY.event_type",
+      "transform": "TRIAL → free, PURCHASE → standalone, GET → free",
+      "example_snowflake": "TRIAL",
+      "example_hubspot": "free"
+    },
+    {
+      "hubspot_field": "hs_last_modified_at",
+      "snowflake_source": "APPLICATION_STATE.last_upgraded_on",
+      "transform": "ISO date string, fallback to created_on if null",
+      "example_snowflake": "2026-01-27T06:23:46",
+      "example_hubspot": "2026-01-27"
+    },
+    {
+      "hubspot_field": "subscription_plan",
+      "snowflake_source": "LISTING_EVENTS_DAILY.event_type",
+      "transform": "TRIAL → falkordb_free, PURCHASE → falkordb_pro",
+      "example_snowflake": "TRIAL",
+      "example_hubspot": "falkordb_free"
+    },
+    {
+      "hubspot_field": "email",
+      "snowflake_source": "LISTING_EVENTS_DAILY.consumer_email",
+      "transform": "direct — only available if consumer opted in",
+      "example_snowflake": "kris@cardless.com",
+      "example_hubspot": "kris@cardless.com"
+    }
+  ],
+  "example_hubspot_payload": {
+    "cloud_region": "us-west-2",
+    "cloud_vendor": "aws",
+    "cloud_version": "V2.18",
+    "cloud_provider": "snowflake",
+    "hs_recurring_billing_start_date": "2026-01-25",
+    "hs_status": "active",
+    "db_name": "YSB30315",
+    "cloud_db_name": "YSB30315",
+    "hs_name": "instance-flb05576",
+    "node_instance_type": "none",
+    "subscription_id_omnistrate": "",
+    "deployment_type": "free",
+    "hs_last_modified_at": "2026-01-25",
+    "subscription_plan": "falkordb_free",
+    "email": "kris@cardless.com",
+    "falkordb_version": "text-to-cypher:v0.1.16"
+  }
+}
