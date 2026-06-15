@@ -261,6 +261,26 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 - Returns query results in Snowflake-compatible format
 - Example: `CALL app_public.graph_query('my_graph', 'MATCH (n) RETURN n LIMIT 10');`
 
+**`graph_query_to_table(graph_name VARCHAR, cypher_query VARCHAR, output_table VARCHAR)`**
+- Executes a Cypher query and writes the returned rows to a durable Snowflake table
+- The output table is created or replaced with `ROW_INDEX NUMBER` and `ROW_DATA VARIANT`
+- Use an unquoted fully qualified output table name: `DATABASE.SCHEMA.TABLE`
+- Example:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query_to_table(
+    'airroutes',
+    'MATCH (a:Airport) RETURN a.code AS code, a.name AS name LIMIT 100',
+    'AIRROUTES_DB.RESULTS.AIRPORT_QUERY_RESULTS'
+);
+```
+
+The app must have permission to create the output table in the target schema:
+
+```sql
+GRANT CREATE TABLE ON SCHEMA AIRROUTES_DB.RESULTS TO APPLICATION <app_instance_name>;
+```
+
 ### Cortex Agent Integration
 
 The agent is created after the normal FalkorDB setup flow. It does not start the service or load data by itself.
