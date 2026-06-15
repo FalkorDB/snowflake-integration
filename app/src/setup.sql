@@ -529,6 +529,78 @@ END
 $$;
 GRANT USAGE ON PROCEDURE app_public.start_app_with_profile(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
 
+CREATE OR REPLACE PROCEDURE app_public.graph_query_to_table(graph_name VARCHAR, cypher_query VARCHAR, output_table VARCHAR)
+    RETURNS OBJECT
+    LANGUAGE JAVASCRIPT
+    EXECUTE AS OWNER
+AS
+$$
+function validateOutputTable(name) {
+    if (!name || !/^[A-Za-z_][A-Za-z0-9_$]*[.][A-Za-z_][A-Za-z0-9_$]*[.][A-Za-z_][A-Za-z0-9_$]*$/.test(name)) {
+        throw new Error("Invalid output_table. Use an unquoted fully qualified table name: DATABASE.SCHEMA.TABLE");
+    }
+}
+
+function normalizeRows(parsed) {
+    if (Array.isArray(parsed)) {
+        return parsed;
+    }
+    if (parsed && Array.isArray(parsed.data)) {
+        return parsed.data;
+    }
+    if (parsed && Array.isArray(parsed.records)) {
+        return parsed.records;
+    }
+    if (parsed && Array.isArray(parsed.results)) {
+        return parsed.results;
+    }
+    if (parsed === null || parsed === undefined || parsed === "") {
+        return [];
+    }
+    return [parsed];
+}
+
+validateOutputTable(OUTPUT_TABLE);
+
+var queryResult = snowflake.execute({
+    sqlText: "SELECT app_public.graph_query_raw(OBJECT_CONSTRUCT('graph_name', ?, 'query', ?))",
+    binds: [GRAPH_NAME, CYPHER_QUERY]
+});
+
+if (!queryResult.next()) {
+    throw new Error("FalkorDB query returned no result.");
+}
+
+var rawResult = queryResult.getColumnValue(1);
+var parsedResult;
+try {
+    parsedResult = typeof rawResult === "string" ? JSON.parse(rawResult) : rawResult;
+} catch (parseErr) {
+    parsedResult = {"raw_result": rawResult};
+}
+
+var rows = normalizeRows(parsedResult);
+
+snowflake.execute({
+    sqlText: "CREATE OR REPLACE TABLE " + OUTPUT_TABLE + " (ROW_INDEX NUMBER, ROW_DATA VARIANT)"
+});
+
+for (var i = 0; i < rows.length; i++) {
+    snowflake.execute({
+        sqlText: "INSERT INTO " + OUTPUT_TABLE + " (ROW_INDEX, ROW_DATA) SELECT ?, PARSE_JSON(?)",
+        binds: [i, JSON.stringify(rows[i])]
+    });
+}
+
+return {
+    "output_table": OUTPUT_TABLE,
+    "row_count": rows.length,
+    "note": "Rows are stored as VARIANT in ROW_DATA because Cypher result shapes can vary by query."
+};
+$$;
+GRANT USAGE ON PROCEDURE app_public.graph_query_to_table(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.graph_query_to_table(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+
 CREATE OR REPLACE PROCEDURE graph.create_agent(agent_name VARCHAR, source_schema VARCHAR, working_schema VARCHAR)
     RETURNS STRING
     LANGUAGE SQL
