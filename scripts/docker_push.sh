@@ -29,7 +29,7 @@ snow spcs image-registry login --connection myconnection || {
 
 echo "✅ Successfully logged into Docker registry!"
 
-FALKORDB_IMAGE="text-to-cypher:v0.1.16"          # source image to pull
+FALKORDB_IMAGE="text-to-cypher:v0.1.20"          # source image to pull
 TARGET_IMAGE_NAME="falkordb_server"              # image name expected by falkordb.yml
 TARGET_TAG="latest"                              # falkordb.yml has no tag -> defaults to 'latest'
 
