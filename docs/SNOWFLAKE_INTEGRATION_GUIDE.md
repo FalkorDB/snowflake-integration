@@ -145,6 +145,31 @@ CALL <app_instance_name>.app_public.graph_query('social_graph',
 );
 ```
 
+### Writing Query Results Back to Snowflake
+
+Use `graph_query_to_table()` when you want Cypher query results to persist as a Snowflake table:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query_to_table(
+  'social_graph',
+  'MATCH (p:Person) RETURN p.name AS name, p.age AS age',
+  'EXAMPLE_DB.RESULT_SCHEMA.PERSON_RESULTS'
+);
+```
+
+The output table is created or replaced with:
+
+```text
+ROW_INDEX NUMBER
+ROW_DATA  VARIANT
+```
+
+The application needs permission to create the output table:
+
+```sql
+GRANT CREATE TABLE ON SCHEMA EXAMPLE_DB.RESULT_SCHEMA TO APPLICATION <app_instance_name>;
+```
+
 ### Managing Graphs
 
 ```sql
