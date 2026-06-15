@@ -309,7 +309,7 @@ CALL <app_instance_name>.graph.create_agent(
 **`graph.create_agent(agent_name VARCHAR, source_schema VARCHAR, working_schema VARCHAR)`**
 - Creates a Snowflake Cortex Agent that can be used from **AI & ML → Agents** or Snowflake Intelligence
 - Wires the agent to FalkorDB tools for listing graphs, inspecting graph schema, checking graph stats, explaining CSV loading, generating Cypher from natural language, and running Cypher through the Native App service
-- Uses the caller's current warehouse as the agent tool execution warehouse
+- Uses the caller role's default/current warehouse as the agent tool execution warehouse, matching the Snowflake Cortex Agent custom-tool flow
 - Arguments:
 
 | Argument | What to pass | Example |
