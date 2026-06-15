@@ -402,7 +402,7 @@ BEGIN
     -- Cortex Agent tool functions. Cortex Agents call these as generic tools
     -- from Snowflake; the functions delegate to the app-owned SPCS service.
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.get_context(input_agent_name VARCHAR)
-        RETURNS VARIANT
+        RETURNS OBJECT
         LANGUAGE SQL
         AS
         ''(
@@ -424,7 +424,7 @@ BEGIN
         ''app_public.graph_list_raw({})''';
 
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.inspect_graph(input_agent_name VARCHAR, graph_name VARCHAR)
-        RETURNS VARIANT
+        RETURNS OBJECT
         LANGUAGE SQL
         AS
         ''OBJECT_CONSTRUCT(
@@ -434,7 +434,7 @@ BEGIN
         )''';
 
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.graph_stats(input_agent_name VARCHAR, graph_name VARCHAR)
-        RETURNS VARIANT
+        RETURNS OBJECT
         LANGUAGE SQL
         AS
         ''OBJECT_CONSTRUCT(
@@ -443,7 +443,7 @@ BEGIN
         )''';
 
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.load_csv_guidance(input_agent_name VARCHAR)
-        RETURNS VARIANT
+        RETURNS OBJECT
         LANGUAGE SQL
         AS
         ''(
@@ -752,7 +752,7 @@ tool_resources:
     EXECUTE IMMEDIATE 'CREATE OR REPLACE AGENT IDENTIFIER(?)
         COMMENT = ''FalkorDB Cortex Agent for natural-language graph workflows''
         PROFILE = ''{"display_name":"FalkorDB Graph Agent","color":"purple"}''
-        FROM SPECIFICATION $$' || spec || '$$'
+        FROM SPECIFICATION ' || CHR(36) || CHR(36) || spec || CHR(36) || CHR(36)
         USING (agent_fqn);
 
     EXECUTE IMMEDIATE 'GRANT USAGE ON AGENT IDENTIFIER(?) TO APPLICATION ROLE app_admin' USING (agent_fqn);
