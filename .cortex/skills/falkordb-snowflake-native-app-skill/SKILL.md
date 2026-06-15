@@ -17,6 +17,7 @@ Use this skill when the user asks about FalkorDB inside Snowflake, Snowflake Nat
 - The FalkorDB profile controls the container request/limit inside the compute pool.
 - The app creates an `XSMALL` warehouse and `CPU_X64_S` compute pool by default if they do not already exist.
 - The default FalkorDB profile is `SMALL`.
+- `graph_query_to_table` writes Cypher query results into durable Snowflake tables as `ROW_INDEX` and `ROW_DATA`.
 
 ## Standard setup flow
 
@@ -72,6 +73,16 @@ CALL <app_instance_name>.app_public.graph_query(
 );
 ```
 
+To persist query results in Snowflake:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query_to_table(
+  'my_graph',
+  'MATCH (n) RETURN n.name AS name LIMIT 100',
+  'RESULT_DB.RESULT_SCHEMA.GRAPH_QUERY_RESULTS'
+);
+```
+
 ## Cortex Agent
 
 Create the agent only after the FalkorDB service is running and graphs are loaded.
@@ -93,4 +104,3 @@ GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
 ```
 
 Then use Snowflake UI: AI & ML -> Agents or Snowflake Intelligence.
-

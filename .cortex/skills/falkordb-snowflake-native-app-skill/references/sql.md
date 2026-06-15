@@ -62,6 +62,18 @@ CALL <app_instance_name>.app_public.graph_query(
 );
 ```
 
+## Write query results to Snowflake
+
+```sql
+GRANT CREATE TABLE ON SCHEMA RESULT_DB.RESULT_SCHEMA TO APPLICATION <app_instance_name>;
+
+CALL <app_instance_name>.app_public.graph_query_to_table(
+  'my_graph',
+  'MATCH (n) RETURN n.name AS name LIMIT 100',
+  'RESULT_DB.RESULT_SCHEMA.GRAPH_QUERY_RESULTS'
+);
+```
+
 ## Load CSV
 
 ```sql
