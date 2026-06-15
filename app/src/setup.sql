@@ -86,7 +86,7 @@ GRANT USAGE ON PROCEDURE app_public.copy_bound_table_to_stage(VARCHAR) TO APPLIC
 
 -- Store FalkorDB engine version (updated each release via docker_push.sh)
 CREATE TABLE IF NOT EXISTS app_public.app_metadata (key STRING, value STRING);
-MERGE INTO app_public.app_metadata t USING (SELECT 'falkordb_version' AS key, 'text-to-cypher:v0.1.12' AS value) s
+MERGE INTO app_public.app_metadata t USING (SELECT 'falkordb_version' AS key, 'text-to-cypher:v0.1.16' AS value) s
   ON t.key = s.key WHEN MATCHED THEN UPDATE SET value = s.value WHEN NOT MATCHED THEN INSERT VALUES (s.key, s.value);
 GRANT SELECT ON TABLE app_public.app_metadata TO APPLICATION ROLE app_admin;
 GRANT SELECT ON TABLE app_public.app_metadata TO APPLICATION ROLE app_user;
@@ -372,6 +372,53 @@ RETURN 'Service started. Check status, and when ready, get URL';
 END;
 $$;
 GRANT USAGE ON PROCEDURE app_public.start_app(VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE app_public.start_app_with_profile(poolname VARCHAR, whname VARCHAR, resource_profile VARCHAR)
+    RETURNS string
+    LANGUAGE sql
+    AS
+$$
+DECLARE
+    normalized_profile STRING DEFAULT UPPER(COALESCE(resource_profile, 'SMALL'));
+    spec_file STRING;
+    invalid_resource_profile EXCEPTION (-20002, 'Invalid resource profile. Use SMALL, MEDIUM, or LARGE.');
+BEGIN
+    IF (normalized_profile = 'SMALL') THEN
+        spec_file := 'falkordb.yaml';
+    ELSEIF (normalized_profile = 'MEDIUM') THEN
+        spec_file := 'falkordb-medium.yaml';
+    ELSEIF (normalized_profile = 'LARGE') THEN
+        spec_file := 'falkordb-large.yaml';
+    ELSE
+        RAISE invalid_resource_profile;
+    END IF;
+
+    EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?)
+        MIN_NODES = 1
+        MAX_NODES = 1
+        INSTANCE_FAMILY = CPU_X64_S
+        AUTO_RESUME = TRUE'
+        USING (poolname);
+
+    EXECUTE IMMEDIATE 'CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER(?)
+        WITH WAREHOUSE_SIZE = ''XSMALL''
+        INITIALLY_SUSPENDED = TRUE
+        AUTO_SUSPEND = 300
+        AUTO_RESUME = TRUE'
+        USING (whname);
+
+    EXECUTE IMMEDIATE 'CREATE SERVICE app_public.st_spcs
+        IN COMPUTE POOL IDENTIFIER(?)
+        FROM SPECIFICATION_FILE = ''' || spec_file || '''
+        QUERY_WAREHOUSE = IDENTIFIER(?)'
+        USING (poolname, whname);
+
+    CALL app_public.start_app(:poolname, :whname);
+
+    RETURN 'Service started with ' || normalized_profile || ' resource profile. Check status, and when ready, get URL';
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.start_app_with_profile(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
 
 CREATE OR REPLACE PROCEDURE app_public.stop_app()
     RETURNS string

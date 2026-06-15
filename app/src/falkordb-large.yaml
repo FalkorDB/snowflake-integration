@@ -14,11 +14,11 @@ spec:
           mountPath: /var/lib/FalkorDB/import
       resources:
         requests:
-          cpu: 0.5
-          memory: 512M
+          cpu: 2.0
+          memory: 4G
         limits:
-          cpu: 1.0
-          memory: 1G
+          cpu: 4.0
+          memory: 6G
   volumes:
     - name: shared-staging
       source: "@app_public.staging"
