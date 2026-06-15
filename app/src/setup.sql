@@ -22,10 +22,11 @@ CREATE TABLE IF NOT EXISTS agent_artefacts.agent_config (
     agent_name STRING PRIMARY KEY,
     source_schema STRING NOT NULL,
     working_schema STRING NOT NULL,
-    warehouse_name STRING NOT NULL,
+    warehouse_name STRING,
     created_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
     updated_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
 );
+ALTER TABLE IF EXISTS agent_artefacts.agent_config ALTER COLUMN warehouse_name DROP NOT NULL;
 GRANT SELECT ON TABLE agent_artefacts.agent_config TO APPLICATION ROLE app_admin;
 
 CREATE TABLE IF NOT EXISTS agent_artefacts.agent_context (
@@ -410,8 +411,7 @@ BEGIN
                 ''''agent_name'''', cfg.agent_name,
                 ''''source_schema'''', cfg.source_schema,
                 ''''working_schema'''', cfg.working_schema,
-                ''''warehouse_name'''', cfg.warehouse_name,
-                ''''guidance'''', ''''Use run_cypher for Cypher execution, inspect_graph to discover labels/relationships/properties, and list_graphs to discover loaded graphs. Generate read-only Cypher for exploratory questions unless the user explicitly asks to mutate graph data.''''
+                ''''guidance'''', ''''Use run_cypher for Cypher execution, inspect_graph to discover labels/relationships/properties, and list_graphs to discover loaded graphs. Generate read-only Cypher for exploratory questions unless the user explicitly asks to mutate graph data. Agent tools use the caller role default warehouse, like Snowflake Cortex Agent custom tools.''''
             )
             FROM agent_artefacts.agent_config cfg
             WHERE cfg.agent_name = UPPER(input_agent_name)
@@ -609,13 +609,11 @@ AS
 $$
 DECLARE
     normalized_agent_name STRING DEFAULT UPPER(agent_name);
-    warehouse_name STRING DEFAULT CURRENT_WAREHOUSE();
     app_name STRING DEFAULT CURRENT_DATABASE();
     agent_fqn STRING;
     spec STRING;
     invalid_agent_name EXCEPTION (-20010, 'Invalid agent name. Use letters, digits, underscores, or dollar signs; first character must be a letter or underscore.');
     invalid_schema_name EXCEPTION (-20011, 'Invalid schema name. Use a fully qualified database.schema identifier.');
-    missing_warehouse EXCEPTION (-20012, 'No current warehouse. Run USE WAREHOUSE <warehouse_name> before creating the agent.');
 BEGIN
     IF (normalized_agent_name IS NULL OR NOT REGEXP_LIKE(normalized_agent_name, '^[A-Z_][A-Z0-9_$]*$')) THEN
         RAISE invalid_agent_name;
@@ -627,10 +625,6 @@ BEGIN
         RAISE invalid_schema_name;
     END IF;
 
-    IF (warehouse_name IS NULL) THEN
-        RAISE missing_warehouse;
-    END IF;
-
     agent_fqn := app_name || '.GRAPH.' || normalized_agent_name;
 
     MERGE INTO agent_artefacts.agent_config t
@@ -638,17 +632,16 @@ BEGIN
         SELECT
             :normalized_agent_name AS agent_name,
             :source_schema AS source_schema,
-            :working_schema AS working_schema,
-            :warehouse_name AS warehouse_name
+            :working_schema AS working_schema
     ) s
     ON t.agent_name = s.agent_name
     WHEN MATCHED THEN UPDATE SET
         source_schema = s.source_schema,
         working_schema = s.working_schema,
-        warehouse_name = s.warehouse_name,
+        warehouse_name = NULL,
         updated_on = CURRENT_TIMESTAMP()
     WHEN NOT MATCHED THEN INSERT (agent_name, source_schema, working_schema, warehouse_name)
-        VALUES (s.agent_name, s.source_schema, s.working_schema, s.warehouse_name);
+        VALUES (s.agent_name, s.source_schema, s.working_schema, NULL);
 
     EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS agent_artefacts.agent_context__' || normalized_agent_name || ' (
         context_key STRING,
@@ -666,8 +659,7 @@ BEGIN
         SELECT :normalized_agent_name AS agent_name, 'setup' AS context_key,
                OBJECT_CONSTRUCT(
                  'source_schema', :source_schema,
-                 'working_schema', :working_schema,
-                 'warehouse_name', :warehouse_name
+                 'working_schema', :working_schema
                ) AS context_value
     ) s
     ON t.agent_name = s.agent_name AND t.context_key = s.context_key
@@ -681,7 +673,7 @@ BEGIN
     tokens: 16000
 instructions:
   response: "You are FalkorDB Graph Agent. Be concise. Explain generated Cypher before running mutating queries. Prefer read-only MATCH/RETURN queries unless the user explicitly asks to change graph data."
-  orchestration: "Always pass agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. Use load_csv_guidance when the user asks how to load data. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '."
+  orchestration: "Always pass input_agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. Use load_csv_guidance when the user asks how to load data. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '. Agent tools use the caller role default warehouse."
   sample_questions:
     - question: "What graphs are available?"
     - question: "Inspect my graph schema and suggest useful Cypher queries."
@@ -695,11 +687,11 @@ tools:
       input_schema:
         type: "object"
         properties:
-          agent_name:
+          input_agent_name:
             type: "string"
             description: "The configured FalkorDB agent name."
         required:
-          - "agent_name"
+          - "input_agent_name"
   - tool_spec:
       type: "generic"
       name: "list_graphs"
@@ -707,11 +699,11 @@ tools:
       input_schema:
         type: "object"
         properties:
-          agent_name:
+          input_agent_name:
             type: "string"
             description: "The configured FalkorDB agent name."
         required:
-          - "agent_name"
+          - "input_agent_name"
   - tool_spec:
       type: "generic"
       name: "inspect_graph"
@@ -719,14 +711,14 @@ tools:
       input_schema:
         type: "object"
         properties:
-          agent_name:
+          input_agent_name:
             type: "string"
             description: "The configured FalkorDB agent name."
           graph_name:
             type: "string"
             description: "The FalkorDB graph name to inspect."
         required:
-          - "agent_name"
+          - "input_agent_name"
           - "graph_name"
   - tool_spec:
       type: "generic"
@@ -735,7 +727,7 @@ tools:
       input_schema:
         type: "object"
         properties:
-          agent_name:
+          input_agent_name:
             type: "string"
             description: "The configured FalkorDB agent name."
           graph_name:
@@ -745,7 +737,7 @@ tools:
             type: "string"
             description: "The Cypher query to execute. Prefer read-only queries unless mutation was explicitly requested."
         required:
-          - "agent_name"
+          - "input_agent_name"
           - "graph_name"
           - "cypher_query"
   - tool_spec:
@@ -755,14 +747,14 @@ tools:
       input_schema:
         type: "object"
         properties:
-          agent_name:
+          input_agent_name:
             type: "string"
             description: "The configured FalkorDB agent name."
           graph_name:
             type: "string"
             description: "The FalkorDB graph name."
         required:
-          - "agent_name"
+          - "input_agent_name"
           - "graph_name"
   - tool_spec:
       type: "generic"
@@ -771,52 +763,46 @@ tools:
       input_schema:
         type: "object"
         properties:
-          agent_name:
+          input_agent_name:
             type: "string"
             description: "The configured FalkorDB agent name."
         required:
-          - "agent_name"
+          - "input_agent_name"
 tool_resources:
   get_context:
     type: "function"
     execution_environment:
       type: "warehouse"
-      warehouse: "' || warehouse_name || '"
       query_timeout: 60
     identifier: "' || app_name || '.AGENT_TOOLS.GET_CONTEXT"
   list_graphs:
     type: "function"
     execution_environment:
       type: "warehouse"
-      warehouse: "' || warehouse_name || '"
       query_timeout: 60
     identifier: "' || app_name || '.AGENT_TOOLS.LIST_GRAPHS"
   inspect_graph:
     type: "function"
     execution_environment:
       type: "warehouse"
-      warehouse: "' || warehouse_name || '"
       query_timeout: 120
     identifier: "' || app_name || '.AGENT_TOOLS.INSPECT_GRAPH"
   graph_stats:
     type: "function"
     execution_environment:
       type: "warehouse"
-      warehouse: "' || warehouse_name || '"
       query_timeout: 120
     identifier: "' || app_name || '.AGENT_TOOLS.GRAPH_STATS"
   load_csv_guidance:
     type: "function"
     execution_environment:
       type: "warehouse"
-      warehouse: "' || warehouse_name || '"
       query_timeout: 60
     identifier: "' || app_name || '.AGENT_TOOLS.LOAD_CSV_GUIDANCE"
   run_cypher:
     type: "function"
     execution_environment:
       type: "warehouse"
-      warehouse: "' || warehouse_name || '"
       query_timeout: 120
     identifier: "' || app_name || '.AGENT_TOOLS.RUN_CYPHER"
 ';
