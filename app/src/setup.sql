@@ -6,6 +6,38 @@ CREATE SCHEMA IF NOT EXISTS app_public;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_user;
 
+-- Cortex Agent schemas. These mirror the Snowflake-native agent surface used by
+-- graph analytics apps: GRAPH is the public API, AGENT_TOOLS contains callable
+-- tools, and AGENT_ARTEFACTS stores per-agent configuration.
+CREATE SCHEMA IF NOT EXISTS graph;
+CREATE SCHEMA IF NOT EXISTS agent_tools;
+CREATE SCHEMA IF NOT EXISTS agent_artefacts;
+GRANT USAGE ON SCHEMA graph TO APPLICATION ROLE app_admin;
+GRANT USAGE ON SCHEMA graph TO APPLICATION ROLE app_user;
+GRANT USAGE ON SCHEMA agent_tools TO APPLICATION ROLE app_admin;
+GRANT USAGE ON SCHEMA agent_tools TO APPLICATION ROLE app_user;
+GRANT USAGE ON SCHEMA agent_artefacts TO APPLICATION ROLE app_admin;
+
+CREATE TABLE IF NOT EXISTS agent_artefacts.agent_config (
+    agent_name STRING PRIMARY KEY,
+    source_schema STRING NOT NULL,
+    working_schema STRING NOT NULL,
+    warehouse_name STRING,
+    created_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    updated_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+);
+ALTER TABLE IF EXISTS agent_artefacts.agent_config ALTER COLUMN warehouse_name DROP NOT NULL;
+GRANT SELECT ON TABLE agent_artefacts.agent_config TO APPLICATION ROLE app_admin;
+
+CREATE TABLE IF NOT EXISTS agent_artefacts.agent_context (
+    agent_name STRING,
+    context_key STRING,
+    context_value VARIANT,
+    updated_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (agent_name, context_key)
+);
+GRANT SELECT ON TABLE agent_artefacts.agent_context TO APPLICATION ROLE app_admin;
+
 -- Register callback for reference binding
 CREATE OR REPLACE PROCEDURE app_public.register_callback(ref_name STRING, operation STRING, ref_or_alias STRING)
 RETURNS STRING
@@ -86,7 +118,7 @@ GRANT USAGE ON PROCEDURE app_public.copy_bound_table_to_stage(VARCHAR) TO APPLIC
 
 -- Store FalkorDB engine version (updated each release via docker_push.sh)
 CREATE TABLE IF NOT EXISTS app_public.app_metadata (key STRING, value STRING);
-MERGE INTO app_public.app_metadata t USING (SELECT 'falkordb_version' AS key, 'text-to-cypher:v0.1.16' AS value) s
+MERGE INTO app_public.app_metadata t USING (SELECT 'falkordb_version' AS key, 'text-to-cypher:v0.1.20' AS value) s
   ON t.key = s.key WHEN MATCHED THEN UPDATE SET value = s.value WHEN NOT MATCHED THEN INSERT VALUES (s.key, s.value);
 GRANT SELECT ON TABLE app_public.app_metadata TO APPLICATION ROLE app_admin;
 GRANT SELECT ON TABLE app_public.app_metadata TO APPLICATION ROLE app_user;
@@ -368,6 +400,83 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_delete(VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_delete(VARCHAR) TO APPLICATION ROLE app_user';
 
+    -- Cortex Agent tool functions. Cortex Agents call these as generic tools
+    -- from Snowflake; the functions delegate to the app-owned SPCS service.
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.get_context(input_agent_name VARCHAR)
+        RETURNS OBJECT
+        LANGUAGE SQL
+        AS
+        ''(
+            SELECT OBJECT_CONSTRUCT(
+                ''''agent_name'''', cfg.agent_name,
+                ''''source_schema'''', cfg.source_schema,
+                ''''working_schema'''', cfg.working_schema,
+                ''''guidance'''', ''''Use run_cypher for Cypher execution, inspect_graph to discover labels/relationships/properties, and list_graphs to discover loaded graphs. Generate read-only Cypher for exploratory questions unless the user explicitly asks to mutate graph data. Agent tools use the caller role default warehouse, like Snowflake Cortex Agent custom tools.''''
+            )
+            FROM agent_artefacts.agent_config cfg
+            WHERE cfg.agent_name = UPPER(input_agent_name)
+        )''';
+
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.list_graphs(input_agent_name VARCHAR)
+        RETURNS STRING
+        LANGUAGE SQL
+        AS
+        ''app_public.graph_list_raw({})''';
+
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.inspect_graph(input_agent_name VARCHAR, graph_name VARCHAR)
+        RETURNS OBJECT
+        LANGUAGE SQL
+        AS
+        ''OBJECT_CONSTRUCT(
+            ''''labels'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', ''''CALL db.labels()'''')),
+            ''''relationship_types'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', ''''CALL db.relationshipTypes()'''')),
+            ''''property_keys'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', ''''CALL db.propertyKeys()''''))
+        )''';
+
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.graph_stats(input_agent_name VARCHAR, graph_name VARCHAR)
+        RETURNS OBJECT
+        LANGUAGE SQL
+        AS
+        ''OBJECT_CONSTRUCT(
+            ''''node_count'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', ''''MATCH (n) RETURN count(n) AS node_count'''')),
+            ''''relationship_count'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', ''''MATCH ()-[r]->() RETURN count(r) AS relationship_count''''))
+        )''';
+
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.load_csv_guidance(input_agent_name VARCHAR)
+        RETURNS OBJECT
+        LANGUAGE SQL
+        AS
+        ''(
+            SELECT OBJECT_CONSTRUCT(
+                ''''source_schema'''', cfg.source_schema,
+                ''''working_schema'''', cfg.working_schema,
+                ''''procedure'''', CURRENT_DATABASE() || ''''.APP_PUBLIC.LOAD_CSV(graph_name, cypher_query)'''',
+                ''''required_pattern'''', ''''Use LOAD CSV FROM ''''''''file://consumer_data.csv'''''''' AS row. Access columns by index: row[0], row[1], row[2]. Prefer MERGE for retry-safe loads.'''',
+                ''''index_guidance'''', ''''Before large MERGE loads, create an index on the matched label/property, for example CREATE INDEX ON :Airport(id).''''
+            )
+            FROM agent_artefacts.agent_config cfg
+            WHERE cfg.agent_name = UPPER(input_agent_name)
+        )''';
+
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.run_cypher(input_agent_name VARCHAR, graph_name VARCHAR, cypher_query VARCHAR)
+        RETURNS STRING
+        LANGUAGE SQL
+        AS
+        ''app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', cypher_query))''';
+
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.get_context(VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.get_context(VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.list_graphs(VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.list_graphs(VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.inspect_graph(VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.inspect_graph(VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.graph_stats(VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.graph_stats(VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.load_csv_guidance(VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.load_csv_guidance(VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.run_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.run_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+
 RETURN 'Service started. Check status, and when ready, get URL';
 END;
 $$;
@@ -419,6 +528,352 @@ BEGIN
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.start_app_with_profile(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE app_public.graph_query_to_table(graph_name VARCHAR, cypher_query VARCHAR, output_table VARCHAR)
+    RETURNS OBJECT
+    LANGUAGE JAVASCRIPT
+    EXECUTE AS OWNER
+AS
+$$
+function validateOutputTable(name) {
+    if (!name || !/^[A-Za-z_][A-Za-z0-9_$]*[.][A-Za-z_][A-Za-z0-9_$]*[.][A-Za-z_][A-Za-z0-9_$]*$/.test(name)) {
+        throw new Error("Invalid output_table. Use an unquoted fully qualified table name: DATABASE.SCHEMA.TABLE");
+    }
+}
+
+function normalizeRows(parsed) {
+    if (Array.isArray(parsed)) {
+        return parsed;
+    }
+    if (parsed && Array.isArray(parsed.data)) {
+        return parsed.data;
+    }
+    if (parsed && Array.isArray(parsed.records)) {
+        return parsed.records;
+    }
+    if (parsed && Array.isArray(parsed.results)) {
+        return parsed.results;
+    }
+    if (parsed === null || parsed === undefined || parsed === "") {
+        return [];
+    }
+    return [parsed];
+}
+
+validateOutputTable(OUTPUT_TABLE);
+
+var queryResult = snowflake.execute({
+    sqlText: "SELECT app_public.graph_query_raw(OBJECT_CONSTRUCT('graph_name', ?, 'query', ?))",
+    binds: [GRAPH_NAME, CYPHER_QUERY]
+});
+
+if (!queryResult.next()) {
+    throw new Error("FalkorDB query returned no result.");
+}
+
+var rawResult = queryResult.getColumnValue(1);
+var parsedResult;
+try {
+    parsedResult = typeof rawResult === "string" ? JSON.parse(rawResult) : rawResult;
+} catch (parseErr) {
+    parsedResult = {"raw_result": rawResult};
+}
+
+var rows = normalizeRows(parsedResult);
+
+snowflake.execute({
+    sqlText: "CREATE OR REPLACE TABLE " + OUTPUT_TABLE + " (ROW_INDEX NUMBER, ROW_DATA VARIANT)"
+});
+
+for (var i = 0; i < rows.length; i++) {
+    snowflake.execute({
+        sqlText: "INSERT INTO " + OUTPUT_TABLE + " (ROW_INDEX, ROW_DATA) SELECT ?, PARSE_JSON(?)",
+        binds: [i, JSON.stringify(rows[i])]
+    });
+}
+
+return {
+    "output_table": OUTPUT_TABLE,
+    "row_count": rows.length,
+    "note": "Rows are stored as VARIANT in ROW_DATA because Cypher result shapes can vary by query."
+};
+$$;
+GRANT USAGE ON PROCEDURE app_public.graph_query_to_table(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.graph_query_to_table(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE graph.create_agent(agent_name VARCHAR, source_schema VARCHAR, working_schema VARCHAR)
+    RETURNS STRING
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    normalized_agent_name STRING DEFAULT UPPER(agent_name);
+    app_name STRING DEFAULT CURRENT_DATABASE();
+    agent_fqn STRING;
+    spec STRING;
+    invalid_agent_name EXCEPTION (-20010, 'Invalid agent name. Use letters, digits, underscores, or dollar signs; first character must be a letter or underscore.');
+    invalid_schema_name EXCEPTION (-20011, 'Invalid schema name. Use a fully qualified database.schema identifier.');
+BEGIN
+    IF (normalized_agent_name IS NULL OR NOT REGEXP_LIKE(normalized_agent_name, '^[A-Z_][A-Z0-9_$]*$')) THEN
+        RAISE invalid_agent_name;
+    END IF;
+
+    IF (source_schema IS NULL OR working_schema IS NULL
+        OR NOT REGEXP_LIKE(source_schema, '^[A-Za-z0-9_.$"]+[.][A-Za-z0-9_.$"]+$')
+        OR NOT REGEXP_LIKE(working_schema, '^[A-Za-z0-9_.$"]+[.][A-Za-z0-9_.$"]+$')) THEN
+        RAISE invalid_schema_name;
+    END IF;
+
+    agent_fqn := app_name || '.GRAPH.' || normalized_agent_name;
+
+    MERGE INTO agent_artefacts.agent_config t
+    USING (
+        SELECT
+            :normalized_agent_name AS agent_name,
+            :source_schema AS source_schema,
+            :working_schema AS working_schema
+    ) s
+    ON t.agent_name = s.agent_name
+    WHEN MATCHED THEN UPDATE SET
+        source_schema = s.source_schema,
+        working_schema = s.working_schema,
+        warehouse_name = NULL,
+        updated_on = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN INSERT (agent_name, source_schema, working_schema, warehouse_name)
+        VALUES (s.agent_name, s.source_schema, s.working_schema, NULL);
+
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS agent_artefacts.agent_context__' || normalized_agent_name || ' (
+        context_key STRING,
+        context_value VARIANT,
+        updated_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+    )';
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS agent_artefacts.agent_config__' || normalized_agent_name || ' (
+        config_key STRING,
+        config_value VARIANT,
+        updated_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+    )';
+
+    MERGE INTO agent_artefacts.agent_context t
+    USING (
+        SELECT :normalized_agent_name AS agent_name, 'setup' AS context_key,
+               OBJECT_CONSTRUCT(
+                 'source_schema', :source_schema,
+                 'working_schema', :working_schema
+               ) AS context_value
+    ) s
+    ON t.agent_name = s.agent_name AND t.context_key = s.context_key
+    WHEN MATCHED THEN UPDATE SET context_value = s.context_value, updated_on = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED THEN INSERT (agent_name, context_key, context_value)
+        VALUES (s.agent_name, s.context_key, s.context_value);
+
+    spec := 'orchestration:
+  budget:
+    seconds: 60
+    tokens: 16000
+instructions:
+  response: "You are FalkorDB Graph Agent. Be concise. Explain generated Cypher before running mutating queries. Prefer read-only MATCH/RETURN queries unless the user explicitly asks to change graph data."
+  orchestration: "Always pass input_agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. Use load_csv_guidance when the user asks how to load data. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '. Agent tools use the caller role default warehouse."
+  sample_questions:
+    - question: "What graphs are available?"
+    - question: "Inspect my graph schema and suggest useful Cypher queries."
+    - question: "Find the top connected nodes in my graph."
+    - question: "Generate a Cypher query for this question and run it."
+tools:
+  - tool_spec:
+      type: "generic"
+      name: "get_context"
+      description: "Return this FalkorDB agent configuration, source schema, working schema, and usage guidance."
+      input_schema:
+        type: "object"
+        properties:
+          input_agent_name:
+            type: "string"
+            description: "The configured FalkorDB agent name."
+        required:
+          - "input_agent_name"
+  - tool_spec:
+      type: "generic"
+      name: "list_graphs"
+      description: "List graphs currently loaded in the FalkorDB service."
+      input_schema:
+        type: "object"
+        properties:
+          input_agent_name:
+            type: "string"
+            description: "The configured FalkorDB agent name."
+        required:
+          - "input_agent_name"
+  - tool_spec:
+      type: "generic"
+      name: "inspect_graph"
+      description: "Inspect labels, relationship types, and property keys for a FalkorDB graph."
+      input_schema:
+        type: "object"
+        properties:
+          input_agent_name:
+            type: "string"
+            description: "The configured FalkorDB agent name."
+          graph_name:
+            type: "string"
+            description: "The FalkorDB graph name to inspect."
+        required:
+          - "input_agent_name"
+          - "graph_name"
+  - tool_spec:
+      type: "generic"
+      name: "run_cypher"
+      description: "Run a Cypher query against a FalkorDB graph and return the result."
+      input_schema:
+        type: "object"
+        properties:
+          input_agent_name:
+            type: "string"
+            description: "The configured FalkorDB agent name."
+          graph_name:
+            type: "string"
+            description: "The FalkorDB graph name."
+          cypher_query:
+            type: "string"
+            description: "The Cypher query to execute. Prefer read-only queries unless mutation was explicitly requested."
+        required:
+          - "input_agent_name"
+          - "graph_name"
+          - "cypher_query"
+  - tool_spec:
+      type: "generic"
+      name: "graph_stats"
+      description: "Return basic graph size statistics: node count and relationship count."
+      input_schema:
+        type: "object"
+        properties:
+          input_agent_name:
+            type: "string"
+            description: "The configured FalkorDB agent name."
+          graph_name:
+            type: "string"
+            description: "The FalkorDB graph name."
+        required:
+          - "input_agent_name"
+          - "graph_name"
+  - tool_spec:
+      type: "generic"
+      name: "load_csv_guidance"
+      description: "Return guidance for loading bound Snowflake table data into FalkorDB with LOAD CSV."
+      input_schema:
+        type: "object"
+        properties:
+          input_agent_name:
+            type: "string"
+            description: "The configured FalkorDB agent name."
+        required:
+          - "input_agent_name"
+tool_resources:
+  get_context:
+    type: "function"
+    execution_environment:
+      type: "warehouse"
+      query_timeout: 60
+    identifier: "' || app_name || '.AGENT_TOOLS.GET_CONTEXT"
+  list_graphs:
+    type: "function"
+    execution_environment:
+      type: "warehouse"
+      query_timeout: 60
+    identifier: "' || app_name || '.AGENT_TOOLS.LIST_GRAPHS"
+  inspect_graph:
+    type: "function"
+    execution_environment:
+      type: "warehouse"
+      query_timeout: 120
+    identifier: "' || app_name || '.AGENT_TOOLS.INSPECT_GRAPH"
+  graph_stats:
+    type: "function"
+    execution_environment:
+      type: "warehouse"
+      query_timeout: 120
+    identifier: "' || app_name || '.AGENT_TOOLS.GRAPH_STATS"
+  load_csv_guidance:
+    type: "function"
+    execution_environment:
+      type: "warehouse"
+      query_timeout: 60
+    identifier: "' || app_name || '.AGENT_TOOLS.LOAD_CSV_GUIDANCE"
+  run_cypher:
+    type: "function"
+    execution_environment:
+      type: "warehouse"
+      query_timeout: 120
+    identifier: "' || app_name || '.AGENT_TOOLS.RUN_CYPHER"
+';
+
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE AGENT IDENTIFIER(?)
+        COMMENT = ''FalkorDB Cortex Agent for natural-language graph workflows''
+        PROFILE = ''{"display_name":"FalkorDB Graph Agent","color":"purple"}''
+        FROM SPECIFICATION ' || CHR(36) || CHR(36) || spec || CHR(36) || CHR(36)
+        USING (agent_fqn);
+
+    EXECUTE IMMEDIATE 'GRANT USAGE ON AGENT IDENTIFIER(?) TO APPLICATION ROLE app_admin' USING (agent_fqn);
+    EXECUTE IMMEDIATE 'GRANT USAGE ON AGENT IDENTIFIER(?) TO APPLICATION ROLE app_user' USING (agent_fqn);
+
+    RETURN 'Created FalkorDB Cortex Agent ' || agent_fqn || '. Grant SNOWFLAKE.CORTEX_AGENT_USER to the consumer role, then open AI & ML > Agents or Snowflake Intelligence.';
+END
+$$;
+GRANT USAGE ON PROCEDURE graph.create_agent(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE graph.get_agent_caller_grants(agent_name VARCHAR)
+    RETURNS STRING
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    normalized_agent_name STRING DEFAULT UPPER(agent_name);
+    source_schema STRING;
+    working_schema STRING;
+    app_name STRING DEFAULT CURRENT_DATABASE();
+BEGIN
+    SELECT cfg.source_schema, cfg.working_schema
+      INTO :source_schema, :working_schema
+      FROM agent_artefacts.agent_config cfg
+     WHERE cfg.agent_name = :normalized_agent_name;
+
+    RETURN '-- Run as ACCOUNTADMIN or a role with MANAGE CALLER GRANTS' || CHAR(10) ||
+           'GRANT INHERITED CALLER SELECT ON ALL TABLES IN SCHEMA ' || source_schema || ' TO APPLICATION ' || app_name || ';' || CHAR(10) ||
+           'GRANT INHERITED CALLER SELECT ON ALL VIEWS IN SCHEMA ' || source_schema || ' TO APPLICATION ' || app_name || ';' || CHAR(10) ||
+           'GRANT INHERITED CALLER SELECT ON ALL TABLES IN SCHEMA ' || working_schema || ' TO APPLICATION ' || app_name || ';' || CHAR(10) ||
+           'GRANT INHERITED CALLER SELECT ON ALL VIEWS IN SCHEMA ' || working_schema || ' TO APPLICATION ' || app_name || ';' || CHAR(10) ||
+           'GRANT INHERITED CALLER INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ' || working_schema || ' TO APPLICATION ' || app_name || ';';
+END
+$$;
+GRANT USAGE ON PROCEDURE graph.get_agent_caller_grants(VARCHAR) TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE graph.drop_agent(agent_name VARCHAR)
+    RETURNS STRING
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    normalized_agent_name STRING DEFAULT UPPER(agent_name);
+    app_name STRING DEFAULT CURRENT_DATABASE();
+    agent_fqn STRING;
+    invalid_agent_name EXCEPTION (-20010, 'Invalid agent name.');
+BEGIN
+    IF (normalized_agent_name IS NULL OR NOT REGEXP_LIKE(normalized_agent_name, '^[A-Z_][A-Z0-9_$]*$')) THEN
+        RAISE invalid_agent_name;
+    END IF;
+
+    agent_fqn := app_name || '.GRAPH.' || normalized_agent_name;
+    EXECUTE IMMEDIATE 'DROP AGENT IF EXISTS IDENTIFIER(?)' USING (agent_fqn);
+    EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS agent_artefacts.agent_context__' || normalized_agent_name;
+    EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS agent_artefacts.agent_config__' || normalized_agent_name;
+    DELETE FROM agent_artefacts.agent_context WHERE agent_context.agent_name = :normalized_agent_name;
+    DELETE FROM agent_artefacts.agent_config WHERE agent_config.agent_name = :normalized_agent_name;
+    RETURN 'Dropped FalkorDB Cortex Agent ' || agent_fqn;
+END
+$$;
+GRANT USAGE ON PROCEDURE graph.drop_agent(VARCHAR) TO APPLICATION ROLE app_admin;
 
 CREATE OR REPLACE PROCEDURE app_public.stop_app()
     RETURNS string

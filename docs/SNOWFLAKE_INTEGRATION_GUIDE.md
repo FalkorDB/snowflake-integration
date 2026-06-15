@@ -145,6 +145,31 @@ CALL <app_instance_name>.app_public.graph_query('social_graph',
 );
 ```
 
+### Writing Query Results Back to Snowflake
+
+Use `graph_query_to_table()` when you want Cypher query results to persist as a Snowflake table:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query_to_table(
+  'social_graph',
+  'MATCH (p:Person) RETURN p.name AS name, p.age AS age',
+  'EXAMPLE_DB.RESULT_SCHEMA.PERSON_RESULTS'
+);
+```
+
+The output table is created or replaced with:
+
+```text
+ROW_INDEX NUMBER
+ROW_DATA  VARIANT
+```
+
+The application needs permission to create the output table:
+
+```sql
+GRANT CREATE TABLE ON SCHEMA EXAMPLE_DB.RESULT_SCHEMA TO APPLICATION <app_instance_name>;
+```
+
 ### Managing Graphs
 
 ```sql
@@ -373,6 +398,92 @@ CALL <app_instance_name>.app_public.get_service_logs('0', 'falkordb', 100);
 
 -- List containers
 CALL <app_instance_name>.app_public.get_service_containers();
+```
+
+### Cortex Agent Integration
+
+FalkorDB can create a Snowflake Cortex Agent so users can work with graph data from **AI & ML → Agents** or Snowflake Intelligence instead of only the browser UI. The agent uses Snowflake custom tools backed by the Native App service to list graphs, inspect labels/relationships/properties, check graph stats, explain CSV loading, generate Cypher, and run Cypher queries.
+
+Create the agent after the FalkorDB service has been started:
+
+```sql
+USE WAREHOUSE FALKORDB_WH;
+
+CALL <app_instance_name>.graph.create_agent(
+  'FALKORDB_GRAPH_AGENT',
+  'SOURCE_DB.SOURCE_SCHEMA',
+  'WORKING_DB.WORKING_SCHEMA'
+);
+```
+
+Grant the Snowflake Cortex Agent role to the consumer role that will use the agent:
+
+```sql
+USE ROLE ACCOUNTADMIN;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
+```
+
+Minimal role and schema setup:
+
+```sql
+USE ROLE ACCOUNTADMIN;
+
+CREATE ROLE IF NOT EXISTS FALKORDB_AGENT_ROLE;
+GRANT APPLICATION ROLE <app_instance_name>.app_admin TO ROLE FALKORDB_AGENT_ROLE;
+GRANT APPLICATION ROLE <app_instance_name>.app_user TO ROLE FALKORDB_AGENT_ROLE;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE FALKORDB_AGENT_ROLE;
+
+GRANT USAGE ON DATABASE SOURCE_DB TO ROLE FALKORDB_AGENT_ROLE;
+GRANT USAGE ON SCHEMA SOURCE_DB.SOURCE_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;
+GRANT SELECT ON ALL TABLES IN SCHEMA SOURCE_DB.SOURCE_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA SOURCE_DB.SOURCE_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;
+
+GRANT USAGE ON DATABASE WORKING_DB TO ROLE FALKORDB_AGENT_ROLE;
+GRANT USAGE ON SCHEMA WORKING_DB.WORKING_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;
+GRANT CREATE TABLE ON SCHEMA WORKING_DB.WORKING_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;
+GRANT CREATE VIEW ON SCHEMA WORKING_DB.WORKING_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;
+```
+
+Then open **AI & ML → Agents** and select `FALKORDB_GRAPH_AGENT`. Example prompts:
+
+```text
+What graphs are available?
+Inspect my graph schema and suggest useful Cypher queries.
+Find the top connected nodes in my graph.
+Generate a Cypher query for this question and run it.
+How do I load my bound Snowflake table into FalkorDB?
+```
+
+To print optional caller grants for the configured source and working schemas:
+
+```sql
+CALL <app_instance_name>.graph.get_agent_caller_grants('FALKORDB_GRAPH_AGENT');
+```
+
+To remove the agent and its app-owned artifacts:
+
+```sql
+CALL <app_instance_name>.graph.drop_agent('FALKORDB_GRAPH_AGENT');
+```
+
+### Cortex Code Skill
+
+The repository includes a Cortex Code skill for FalkorDB Snowflake workflows:
+
+```text
+.cortex/skills/falkordb-snowflake-native-app-skill
+```
+
+Use it when you want AI coding assistance for installation SQL, resource sizing, loading data, Cypher queries, and Cortex Agent setup. Register the skill in Cortex Code, verify it with:
+
+```text
+/skill list
+```
+
+Then invoke it explicitly if needed:
+
+```text
+$falkordb-snowflake-native-app-skill
 ```
 
 ## Cypher Query Language Basics
