@@ -5,7 +5,7 @@ version:
   name: V2
   label: "Version Two"
   comment: "Add FalkorDB Cortex Agent integration"
-  patch: 39
+  patch: 40
 
 
 #artifacts that are distributed from this version of the package
@@ -23,6 +23,8 @@ privileges:
       description: "Allows application to create compute pools for running services"
  - CREATE WAREHOUSE:
       description: "Allows application to create warehouses for query processing"
+ - IMPORTED PRIVILEGES ON SNOWFLAKE DB:
+      description: "Allows the app to call Snowflake Cortex functions for Agent text-to-Cypher generation"
 
 references:
   - consumer_data_table:

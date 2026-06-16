@@ -1065,7 +1065,7 @@ tool_resources:
     EXECUTE IMMEDIATE 'GRANT USAGE ON AGENT IDENTIFIER(?) TO APPLICATION ROLE app_admin' USING (agent_fqn);
     EXECUTE IMMEDIATE 'GRANT USAGE ON AGENT IDENTIFIER(?) TO APPLICATION ROLE app_user' USING (agent_fqn);
 
-    RETURN 'Created FalkorDB Cortex Agent ' || agent_fqn || '. Grant SNOWFLAKE.CORTEX_AGENT_USER and SNOWFLAKE.CORTEX_USER to the consumer role, then open AI & ML > Agents or Snowflake Intelligence.';
+    RETURN 'Created FalkorDB Cortex Agent ' || agent_fqn || '. Grant SNOWFLAKE.CORTEX_AGENT_USER and SNOWFLAKE.CORTEX_USER to the consumer role, grant imported privileges on database SNOWFLAKE to the application, then open AI & ML > Agents or Snowflake Intelligence.';
 END
 $$;
 GRANT USAGE ON PROCEDURE graph.create_agent(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;

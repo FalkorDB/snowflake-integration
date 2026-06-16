@@ -49,6 +49,7 @@ Before installing this app, ensure you have:
    - `BIND SERVICE ENDPOINT`: Allows the app to expose internal service endpoints
    - `CREATE COMPUTE POOL`: Allows the app to create compute pools automatically
    - `CREATE WAREHOUSE`: Allows the app to create warehouses automatically
+   - `IMPORTED PRIVILEGES ON SNOWFLAKE DB`: Allows the Agent `text_to_cypher` tool to call Snowflake Cortex model functions
 4. Complete the installation process
 
 ### Step 2: Bind Your Data Table
@@ -379,6 +380,9 @@ The consumer role that uses the agent must have Snowflake Cortex Agent access:
 USE ROLE ACCOUNTADMIN;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <consumer_role>;
+
+-- Required by the Native App so text_to_cypher can resolve SNOWFLAKE.CORTEX.COMPLETE.
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <app_instance_name>;
 ```
 
 Minimal setup template:
@@ -391,6 +395,7 @@ GRANT APPLICATION ROLE <app_instance_name>.app_admin TO ROLE FALKORDB_AGENT_ROLE
 GRANT APPLICATION ROLE <app_instance_name>.app_user TO ROLE FALKORDB_AGENT_ROLE;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE FALKORDB_AGENT_ROLE;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FALKORDB_AGENT_ROLE;
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <app_instance_name>;
 
 GRANT USAGE ON DATABASE SOURCE_DB TO ROLE FALKORDB_AGENT_ROLE;
 GRANT USAGE ON SCHEMA SOURCE_DB.SOURCE_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;
