@@ -325,6 +325,8 @@ GRANT CREATE TABLE ON SCHEMA AIRROUTES_DB.RESULTS TO APPLICATION <app_instance_n
 
 The agent is created after the normal FalkorDB setup flow. It does not start the service by itself. It can load data only from an already-bound `consumer_data_table` reference after the user confirms the generated LOAD CSV mapping.
 
+For difficult graph questions, the agent can call its `text_to_cypher` tool before execution. This tool uses a default Snowflake Cortex model to generate FalkorDB Cypher from the graph schema and the user's question, then the agent can explain the generated query and call `run_cypher`.
+
 Required flow:
 
 ```sql
@@ -348,7 +350,7 @@ CALL <app_instance_name>.graph.create_agent(
 
 **`graph.create_agent(agent_name VARCHAR, source_schema VARCHAR, working_schema VARCHAR)`**
 - Creates a Snowflake Cortex Agent that can be used from **AI & ML → Agents** or Snowflake Intelligence
-- Wires the agent to FalkorDB tools for listing graphs, inspecting graph schema, checking graph stats, generating Cypher from natural language, loading already-bound Snowflake table data, and running Cypher through the Native App service
+- Wires the agent to FalkorDB tools for listing graphs, inspecting graph schema, checking graph stats, generating Cypher from natural language with `text_to_cypher`, loading already-bound Snowflake table data, and running Cypher through the Native App service
 - Uses the caller role's default/current warehouse as the agent tool execution warehouse, matching the Snowflake Cortex Agent custom-tool flow
 - Arguments:
 
@@ -374,6 +376,7 @@ The consumer role that uses the agent must have Snowflake Cortex Agent access:
 ```sql
 USE ROLE ACCOUNTADMIN;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <consumer_role>;
 ```
 
 Minimal setup template:
@@ -385,6 +388,7 @@ CREATE ROLE IF NOT EXISTS FALKORDB_AGENT_ROLE;
 GRANT APPLICATION ROLE <app_instance_name>.app_admin TO ROLE FALKORDB_AGENT_ROLE;
 GRANT APPLICATION ROLE <app_instance_name>.app_user TO ROLE FALKORDB_AGENT_ROLE;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE FALKORDB_AGENT_ROLE;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FALKORDB_AGENT_ROLE;
 
 GRANT USAGE ON DATABASE SOURCE_DB TO ROLE FALKORDB_AGENT_ROLE;
 GRANT USAGE ON SCHEMA SOURCE_DB.SOURCE_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;

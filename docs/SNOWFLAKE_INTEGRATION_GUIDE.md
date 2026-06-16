@@ -438,7 +438,9 @@ CALL <app_instance_name>.app_public.get_service_containers();
 
 ### Cortex Agent Integration
 
-FalkorDB can create a Snowflake Cortex Agent so users can work with graph data from **AI & ML → Agents** or Snowflake Intelligence instead of only the browser UI. The agent uses Snowflake custom tools backed by the Native App service to list graphs, inspect labels/relationships/properties, check graph stats, generate Cypher, load already-bound Snowflake table data, and run Cypher queries.
+FalkorDB can create a Snowflake Cortex Agent so users can work with graph data from **AI & ML → Agents** or Snowflake Intelligence instead of only the browser UI. The agent uses Snowflake custom tools backed by the Native App service to list graphs, inspect labels/relationships/properties, check graph stats, generate Cypher with `text_to_cypher`, load already-bound Snowflake table data, and run Cypher queries.
+
+For difficult graph questions, the agent can call `text_to_cypher` before execution. This tool uses a default Snowflake Cortex model to generate FalkorDB Cypher from graph schema context and the user's question, then the agent can explain the generated query and call `run_cypher`.
 
 Create the agent after the FalkorDB service has been started:
 
@@ -457,6 +459,7 @@ Grant the Snowflake Cortex Agent role to the consumer role that will use the age
 ```sql
 USE ROLE ACCOUNTADMIN;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <consumer_role>;
 ```
 
 Minimal role and schema setup:
@@ -468,6 +471,7 @@ CREATE ROLE IF NOT EXISTS FALKORDB_AGENT_ROLE;
 GRANT APPLICATION ROLE <app_instance_name>.app_admin TO ROLE FALKORDB_AGENT_ROLE;
 GRANT APPLICATION ROLE <app_instance_name>.app_user TO ROLE FALKORDB_AGENT_ROLE;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE FALKORDB_AGENT_ROLE;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FALKORDB_AGENT_ROLE;
 
 GRANT USAGE ON DATABASE SOURCE_DB TO ROLE FALKORDB_AGENT_ROLE;
 GRANT USAGE ON SCHEMA SOURCE_DB.SOURCE_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;

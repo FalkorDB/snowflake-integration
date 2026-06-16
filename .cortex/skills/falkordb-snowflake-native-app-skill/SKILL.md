@@ -18,6 +18,7 @@ Use this skill when the user asks about FalkorDB inside Snowflake, Snowflake Nat
 - The app creates an `XSMALL` warehouse and `CPU_X64_S` compute pool by default if they do not already exist.
 - The default FalkorDB container resources request 1 CPU / 2GB RAM and limit at 2 CPU / 4GB RAM.
 - `graph_query` can write Cypher query results into durable Snowflake tables when called with `write.outputTable` options.
+- The Snowflake Agent can use `text_to_cypher` for difficult natural-language graph questions before calling `run_cypher`.
 
 ## Standard setup flow
 
@@ -127,8 +128,11 @@ The consumer role must have:
 
 ```sql
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <consumer_role>;
 ```
 
 Then use Snowflake UI: AI & ML -> Agents or Snowflake Intelligence.
 
 The deployed agent can load data only from the already-bound `consumer_data_table` reference. It should ask for a graph name if missing, generate `LOAD CSV FROM 'file://consumer_data.csv' AS row ...` mapping Cypher from the table columns, prefer `MERGE`, and ask for confirmation before running the load tool.
+
+For difficult graph questions, the deployed agent should call `text_to_cypher(input_agent_name, graph_name, user_question)` before `run_cypher`. The tool uses a default Snowflake Cortex model and graph schema context to generate FalkorDB Cypher. The role using the agent should have both `SNOWFLAKE.CORTEX_AGENT_USER` and `SNOWFLAKE.CORTEX_USER`.

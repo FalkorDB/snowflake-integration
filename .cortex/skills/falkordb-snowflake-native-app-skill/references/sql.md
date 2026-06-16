@@ -84,6 +84,16 @@ CALL <app_instance_name>.app_public.graph_query(
 );
 ```
 
+## Agent text to Cypher
+
+```sql
+-- Grant model access to the role that uses the Snowflake Agent.
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <consumer_role>;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
+```
+
+The Agent can call `text_to_cypher(input_agent_name, graph_name, user_question)` for difficult graph questions, review the returned `cypher`, then call `run_cypher`.
+
 ## Write query results to Snowflake
 
 ```sql
