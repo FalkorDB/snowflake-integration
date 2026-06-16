@@ -6,23 +6,45 @@
 CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
 ```
 
-## Start with profile
+## Open FalkorDB Browser
+
+Use FalkorDB Browser to visually explore graphs, inspect nodes and relationships, and run Cypher queries interactively.
 
 ```sql
-CALL <app_instance_name>.app_public.start_app_with_profile(
+SHOW ENDPOINTS IN SERVICE <app_instance_name>.app_public.st_spcs;
+
+SELECT "ingress_url" AS browser_url
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE "name" = 'falkordb-browser';
+```
+
+## Start with custom container resources
+
+```sql
+CALL <app_instance_name>.app_public.start_app(
   'FALKORDB_POOL',
   'FALKORDB_WH',
-  'LARGE'
+  OBJECT_CONSTRUCT(
+    'cpuRequest', 2,
+    'memoryRequest', '4G',
+    'cpuLimit', 4,
+    'memoryLimit', '8G'
+  )
 );
 ```
 
-Profiles:
+Default container resources request 1 CPU / 2GB RAM and limit at 2 CPU / 4GB RAM.
 
-| Profile | Request | Limit |
-|---|---|---|
-| `SMALL` | 0.5 CPU / 512MB RAM | 1 CPU / 1GB RAM |
-| `MEDIUM` | 1 CPU / 2GB RAM | 2 CPU / 4GB RAM |
-| `LARGE` | 2 CPU / 4GB RAM | 4 CPU / 6GB RAM |
+Option meanings:
+
+| Option | Meaning |
+|---|---|
+| `cpuRequest` | CPU reserved for scheduling |
+| `memoryRequest` | Memory reserved for scheduling |
+| `cpuLimit` | Maximum CPU the container can use |
+| `memoryLimit` | Maximum memory the container can use |
+
+Requests must fit the selected compute pool node; otherwise Snowflake can fail scheduling or report insufficient resources.
 
 ## Warehouse resize
 
@@ -67,10 +89,14 @@ CALL <app_instance_name>.app_public.graph_query(
 ```sql
 GRANT CREATE TABLE ON SCHEMA RESULT_DB.RESULT_SCHEMA TO APPLICATION <app_instance_name>;
 
-CALL <app_instance_name>.app_public.graph_query_to_table(
+CALL <app_instance_name>.app_public.graph_query(
   'my_graph',
   'MATCH (n) RETURN n.name AS name LIMIT 100',
-  'RESULT_DB.RESULT_SCHEMA.GRAPH_QUERY_RESULTS'
+  OBJECT_CONSTRUCT(
+    'write', OBJECT_CONSTRUCT(
+      'outputTable', 'RESULT_DB.RESULT_SCHEMA.GRAPH_QUERY_RESULTS'
+    )
+  )
 );
 ```
 

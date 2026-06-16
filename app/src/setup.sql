@@ -411,7 +411,7 @@ BEGIN
                 ''''agent_name'''', cfg.agent_name,
                 ''''source_schema'''', cfg.source_schema,
                 ''''working_schema'''', cfg.working_schema,
-                ''''guidance'''', ''''Use run_cypher for Cypher execution, inspect_graph to discover labels/relationships/properties, and list_graphs to discover loaded graphs. Generate read-only Cypher for exploratory questions unless the user explicitly asks to mutate graph data. Agent tools use the caller role default warehouse, like Snowflake Cortex Agent custom tools.''''
+                ''''guidance'''', ''''Use run_cypher for Cypher execution, inspect_graph to discover labels/relationships/properties, and list_graphs to discover loaded graphs. Generate read-only Cypher for exploratory questions unless the user explicitly asks to mutate graph data. For loading, the user/admin must bind consumer_data_table first; then generate LOAD CSV mapping Cypher, ask for confirmation, and call load_csv. Agent tools use the caller role default warehouse, like Snowflake Cortex Agent custom tools.''''
             )
             FROM agent_artefacts.agent_config cfg
             WHERE cfg.agent_name = UPPER(input_agent_name)
@@ -450,7 +450,8 @@ BEGIN
             SELECT OBJECT_CONSTRUCT(
                 ''''source_schema'''', cfg.source_schema,
                 ''''working_schema'''', cfg.working_schema,
-                ''''procedure'''', CURRENT_DATABASE() || ''''.APP_PUBLIC.LOAD_CSV(graph_name, cypher_query)'''',
+                ''''tool'''', CURRENT_DATABASE() || ''''.AGENT_TOOLS.LOAD_CSV(input_agent_name, graph_name, cypher_query)'''',
+                ''''binding_required'''', ''''The user/admin must bind consumer_data_table before loading. If loading fails with a reference error, ask the user to bind a Snowflake table through the app reference flow before retrying.'''',
                 ''''required_pattern'''', ''''Use LOAD CSV FROM ''''''''file://consumer_data.csv'''''''' AS row. Access columns by index: row[0], row[1], row[2]. Prefer MERGE for retry-safe loads.'''',
                 ''''index_guidance'''', ''''Before large MERGE loads, create an index on the matched label/property, for example CREATE INDEX ON :Airport(id).''''
             )
@@ -464,6 +465,27 @@ BEGIN
         AS
         ''app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', cypher_query))''';
 
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE agent_tools.load_csv(input_agent_name VARCHAR, graph_name VARCHAR, cypher_query VARCHAR)
+        RETURNS VARIANT
+        LANGUAGE SQL
+        AS
+        ''DECLARE
+            configured_agent_count NUMBER;
+            load_result VARIANT;
+            missing_agent EXCEPTION (-20020, ''''Unknown FalkorDB agent. Call graph.create_agent first.'''' );
+        BEGIN
+            SELECT COUNT(*) INTO :configured_agent_count
+            FROM agent_artefacts.agent_config
+            WHERE agent_name = UPPER(:input_agent_name);
+
+            IF (configured_agent_count = 0) THEN
+                RAISE missing_agent;
+            END IF;
+
+            CALL app_public.load_csv(:graph_name, :cypher_query) INTO :load_result;
+            RETURN load_result;
+        END''';
+
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.get_context(VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.get_context(VARCHAR) TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.list_graphs(VARCHAR) TO APPLICATION ROLE app_admin';
@@ -476,68 +498,145 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.load_csv_guidance(VARCHAR) TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.run_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.run_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
 
 RETURN 'Service started. Check status, and when ready, get URL';
 END;
 $$;
 GRANT USAGE ON PROCEDURE app_public.start_app(VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
 
-CREATE OR REPLACE PROCEDURE app_public.start_app_with_profile(poolname VARCHAR, whname VARCHAR, resource_profile VARCHAR)
-    RETURNS string
-    LANGUAGE sql
-    AS
-$$
-DECLARE
-    normalized_profile STRING DEFAULT UPPER(COALESCE(resource_profile, 'SMALL'));
-    spec_file STRING;
-    invalid_resource_profile EXCEPTION (-20002, 'Invalid resource profile. Use SMALL, MEDIUM, or LARGE.');
-BEGIN
-    IF (normalized_profile = 'SMALL') THEN
-        spec_file := 'falkordb.yaml';
-    ELSEIF (normalized_profile = 'MEDIUM') THEN
-        spec_file := 'falkordb-medium.yaml';
-    ELSEIF (normalized_profile = 'LARGE') THEN
-        spec_file := 'falkordb-large.yaml';
-    ELSE
-        RAISE invalid_resource_profile;
-    END IF;
-
-    EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?)
-        MIN_NODES = 1
-        MAX_NODES = 1
-        INSTANCE_FAMILY = CPU_X64_S
-        AUTO_RESUME = TRUE'
-        USING (poolname);
-
-    EXECUTE IMMEDIATE 'CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER(?)
-        WITH WAREHOUSE_SIZE = ''XSMALL''
-        INITIALLY_SUSPENDED = TRUE
-        AUTO_SUSPEND = 300
-        AUTO_RESUME = TRUE'
-        USING (whname);
-
-    EXECUTE IMMEDIATE 'CREATE SERVICE app_public.st_spcs
-        IN COMPUTE POOL IDENTIFIER(?)
-        FROM SPECIFICATION_FILE = ''' || spec_file || '''
-        QUERY_WAREHOUSE = IDENTIFIER(?)'
-        USING (poolname, whname);
-
-    CALL app_public.start_app(:poolname, :whname);
-
-    RETURN 'Service started with ' || normalized_profile || ' resource profile. Check status, and when ready, get URL';
-END
-$$;
-GRANT USAGE ON PROCEDURE app_public.start_app_with_profile(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
-
-CREATE OR REPLACE PROCEDURE app_public.graph_query_to_table(graph_name VARCHAR, cypher_query VARCHAR, output_table VARCHAR)
-    RETURNS OBJECT
+CREATE OR REPLACE PROCEDURE app_public.start_app(poolname VARCHAR, whname VARCHAR, options OBJECT)
+    RETURNS STRING
     LANGUAGE JAVASCRIPT
     EXECUTE AS OWNER
 AS
 $$
+function getOption(options, names, defaultValue) {
+    if (!options) {
+        return defaultValue;
+    }
+    for (var i = 0; i < names.length; i++) {
+        if (Object.prototype.hasOwnProperty.call(options, names[i])) {
+            return options[names[i]];
+        }
+    }
+    return defaultValue;
+}
+
+function validateCpu(value, name) {
+    var str = String(value);
+    if (!/^(?:[0-9]+(?:[.][0-9]+)?|[0-9]+m)$/.test(str)) {
+        throw new Error("Invalid " + name + ". Use a numeric CPU value such as 1, 1.5, or 500m.");
+    }
+    return str;
+}
+
+function validateMemory(value, name) {
+    var str = String(value);
+    if (!/^[0-9]+(?:[.][0-9]+)?(?:M|Mi|G|Gi)$/.test(str)) {
+        throw new Error("Invalid " + name + ". Use memory with units M, Mi, G, or Gi, such as 2G or 4Gi.");
+    }
+    return str;
+}
+
+var cpuRequest = validateCpu(getOption(OPTIONS, ["cpuRequest", "cpu_request", "CPUREQUEST", "CPU_REQUEST"], 1), "cpuRequest");
+var memoryRequest = validateMemory(getOption(OPTIONS, ["memoryRequest", "memory_request", "MEMORYREQUEST", "MEMORY_REQUEST"], "2G"), "memoryRequest");
+var cpuLimit = validateCpu(getOption(OPTIONS, ["cpuLimit", "cpu_limit", "CPULIMIT", "CPU_LIMIT"], 2), "cpuLimit");
+var memoryLimit = validateMemory(getOption(OPTIONS, ["memoryLimit", "memory_limit", "MEMORYLIMIT", "MEMORY_LIMIT"], "4G"), "memoryLimit");
+
+var spec = `spec:
+  containers:
+    - name: falkordb-server
+      image: /falkordb_app/napp/img_repo/falkordb_server:latest
+      command:
+        - /bin/bash
+        - -lc
+        - sed -i -e '/^ALLOWED_ORIGINS=/d' -e '/^AUTH_URL=/d' -e '/^NEXTAUTH_URL=/d' /var/lib/falkordb/browser/.env.local && exec /entrypoint.sh
+      env:
+        AUTH_TRUST_HOST: "true"
+        TRUST_PROXY_HEADERS: "true"
+      volumeMounts:
+        - name: shared-staging
+          mountPath: /var/lib/FalkorDB/import
+      resources:
+        requests:
+          cpu: ${cpuRequest}
+          memory: ${memoryRequest}
+        limits:
+          cpu: ${cpuLimit}
+          memory: ${memoryLimit}
+  volumes:
+    - name: shared-staging
+      source: "@app_public.staging"
+      uid: 1000
+      gid: 1000
+  endpoints:
+    - name: api
+      port: 8080
+      public: false
+    - name: falkordb
+      port: 6379
+      public: false
+    - name: falkordb-browser
+      port: 3000
+      public: true
+`;
+
+snowflake.execute({
+    sqlText: "CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_S AUTO_RESUME = TRUE",
+    binds: [POOLNAME]
+});
+
+snowflake.execute({
+    sqlText: "CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER(?) WITH WAREHOUSE_SIZE = 'XSMALL' INITIALLY_SUSPENDED = TRUE AUTO_SUSPEND = 300 AUTO_RESUME = TRUE",
+    binds: [WHNAME]
+});
+
+var dollarQuote = String.fromCharCode(36) + String.fromCharCode(36);
+snowflake.execute({
+    sqlText: "CREATE SERVICE app_public.st_spcs IN COMPUTE POOL IDENTIFIER(?) FROM SPECIFICATION " + dollarQuote + spec + dollarQuote + " QUERY_WAREHOUSE = IDENTIFIER(?)",
+    binds: [POOLNAME, WHNAME]
+});
+
+var startResult = snowflake.execute({
+    sqlText: "CALL app_public.start_app(?, ?)",
+    binds: [POOLNAME, WHNAME]
+});
+startResult.next();
+
+return "Service started with custom resources: request " + cpuRequest + " CPU / " + memoryRequest + ", limit " + cpuLimit + " CPU / " + memoryLimit + ". Check status, and when ready, get URL.";
+$$;
+GRANT USAGE ON PROCEDURE app_public.start_app(VARCHAR, VARCHAR, OBJECT) TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE app_public.graph_query(graph_name VARCHAR, cypher_query VARCHAR, options OBJECT)
+    RETURNS VARIANT
+    LANGUAGE JAVASCRIPT
+    EXECUTE AS OWNER
+AS
+$$
+function normalizeOptions(options) {
+    if (!options) {
+        return {};
+    }
+    if (typeof options === "string") {
+        return JSON.parse(options);
+    }
+    return options;
+}
+
+function getProperty(obj, names) {
+    for (var i = 0; i < names.length; i++) {
+        if (obj && Object.prototype.hasOwnProperty.call(obj, names[i])) {
+            return obj[names[i]];
+        }
+    }
+    return undefined;
+}
+
 function validateOutputTable(name) {
     if (!name || !/^[A-Za-z_][A-Za-z0-9_$]*[.][A-Za-z_][A-Za-z0-9_$]*[.][A-Za-z_][A-Za-z0-9_$]*$/.test(name)) {
-        throw new Error("Invalid output_table. Use an unquoted fully qualified table name: DATABASE.SCHEMA.TABLE");
+        throw new Error("Invalid write.outputTable. Use an unquoted fully qualified table name: DATABASE.SCHEMA.TABLE");
     }
 }
 
@@ -560,7 +659,13 @@ function normalizeRows(parsed) {
     return [parsed];
 }
 
-validateOutputTable(OUTPUT_TABLE);
+var normalizedOptions = normalizeOptions(OPTIONS);
+var writeOptions = getProperty(normalizedOptions, ["write", "WRITE"]);
+var outputTable = writeOptions ? getProperty(writeOptions, ["outputTable", "output_table", "OUTPUTTABLE", "OUTPUT_TABLE"]) : null;
+
+if (writeOptions) {
+    validateOutputTable(outputTable);
+}
 
 var queryResult = snowflake.execute({
     sqlText: "SELECT app_public.graph_query_raw(OBJECT_CONSTRUCT('graph_name', ?, 'query', ?))",
@@ -579,27 +684,31 @@ try {
     parsedResult = {"raw_result": rawResult};
 }
 
+if (!writeOptions) {
+    return rawResult;
+}
+
 var rows = normalizeRows(parsedResult);
 
 snowflake.execute({
-    sqlText: "CREATE OR REPLACE TABLE " + OUTPUT_TABLE + " (ROW_INDEX NUMBER, ROW_DATA VARIANT)"
+    sqlText: "CREATE OR REPLACE TABLE " + outputTable + " (ROW_INDEX NUMBER, ROW_DATA VARIANT)"
 });
 
 for (var i = 0; i < rows.length; i++) {
     snowflake.execute({
-        sqlText: "INSERT INTO " + OUTPUT_TABLE + " (ROW_INDEX, ROW_DATA) SELECT ?, PARSE_JSON(?)",
+        sqlText: "INSERT INTO " + outputTable + " (ROW_INDEX, ROW_DATA) SELECT ?, PARSE_JSON(?)",
         binds: [i, JSON.stringify(rows[i])]
     });
 }
 
 return {
-    "output_table": OUTPUT_TABLE,
+    "output_table": outputTable,
     "row_count": rows.length,
     "note": "Rows are stored as VARIANT in ROW_DATA because Cypher result shapes can vary by query."
 };
 $$;
-GRANT USAGE ON PROCEDURE app_public.graph_query_to_table(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
-GRANT USAGE ON PROCEDURE app_public.graph_query_to_table(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE app_public.graph_query(VARCHAR, VARCHAR, OBJECT) TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.graph_query(VARCHAR, VARCHAR, OBJECT) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE graph.create_agent(agent_name VARCHAR, source_schema VARCHAR, working_schema VARCHAR)
     RETURNS STRING
@@ -673,12 +782,13 @@ BEGIN
     tokens: 16000
 instructions:
   response: "You are FalkorDB Graph Agent. Be concise. Explain generated Cypher before running mutating queries. Prefer read-only MATCH/RETURN queries unless the user explicitly asks to change graph data."
-  orchestration: "Always pass input_agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. Use load_csv_guidance when the user asks how to load data. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '. Agent tools use the caller role default warehouse."
+  orchestration: "Always pass input_agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. Use load_csv_guidance when the user asks how to load data. To load data, first explain that consumer_data_table must already be bound by a user/admin. Ask which graph name to use if missing. Generate LOAD CSV mapping Cypher using row indexes and MERGE for idempotency, then ask for explicit confirmation before calling load_csv. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '. Agent tools use the caller role default warehouse."
   sample_questions:
     - question: "What graphs are available?"
     - question: "Inspect my graph schema and suggest useful Cypher queries."
     - question: "Find the top connected nodes in my graph."
     - question: "Generate a Cypher query for this question and run it."
+    - question: "Help me load my bound Snowflake table into a FalkorDB graph."
 tools:
   - tool_spec:
       type: "generic"
@@ -768,6 +878,26 @@ tools:
             description: "The configured FalkorDB agent name."
         required:
           - "input_agent_name"
+  - tool_spec:
+      type: "generic"
+      name: "load_csv"
+      description: "Load data from the already-bound consumer_data_table reference into a FalkorDB graph using a confirmed LOAD CSV Cypher mapping."
+      input_schema:
+        type: "object"
+        properties:
+          input_agent_name:
+            type: "string"
+            description: "The configured FalkorDB agent name."
+          graph_name:
+            type: "string"
+            description: "The FalkorDB graph name to load into."
+          cypher_query:
+            type: "string"
+            description: "The LOAD CSV Cypher mapping to execute. It must use LOAD CSV FROM ''file://consumer_data.csv'' AS row and should use MERGE for retry-safe loads."
+        required:
+          - "input_agent_name"
+          - "graph_name"
+          - "cypher_query"
 tool_resources:
   get_context:
     type: "function"
@@ -805,6 +935,12 @@ tool_resources:
       type: "warehouse"
       query_timeout: 120
     identifier: "' || app_name || '.AGENT_TOOLS.RUN_CYPHER"
+  load_csv:
+    type: "procedure"
+    execution_environment:
+      type: "warehouse"
+      query_timeout: 600
+    identifier: "' || app_name || '.AGENT_TOOLS.LOAD_CSV"
 ';
 
     EXECUTE IMMEDIATE 'CREATE OR REPLACE AGENT IDENTIFIER(?)

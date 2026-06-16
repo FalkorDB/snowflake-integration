@@ -5,7 +5,7 @@ This Cortex Code skill helps users work with the FalkorDB Snowflake Native App.
 It covers:
 
 - installing and starting the app
-- warehouse, compute pool, and FalkorDB profile usage
+- warehouse, compute pool, and FalkorDB container resource options
 - loading bound Snowflake tables into FalkorDB
 - writing Cypher queries
 - creating and using the FalkorDB Cortex Agent

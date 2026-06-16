@@ -75,7 +75,7 @@ CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
 
 **Default Resource Configuration**:
 - **Compute Pool**: `CPU_X64_S` instance family, 1 node, auto-resume enabled. Exact CPU/RAM can vary by Snowflake region; check with `SHOW COMPUTE POOL INSTANCE FAMILIES;`
-- **FalkorDB Container**: `SMALL` profile by default, requests 0.5 CPU / 512MB RAM and can use up to 1 CPU / 1GB RAM
+- **FalkorDB Container**: requests 1 CPU / 2GB RAM and can use up to 2 CPU / 4GB RAM by default
 - **Warehouse**: `XSMALL` size, initially suspended, auto-suspend after 300 seconds
 
 To use a larger Snowflake warehouse for SQL/procedure execution, resize it after creation:
@@ -88,27 +88,60 @@ ALTER WAREHOUSE FALKORDB_WH SET WAREHOUSE_SIZE = 'MEDIUM';
 
 Larger warehouses consume more Snowflake credits while running.
 
-**Resource Profiles**: For larger graphs, start the app with a larger FalkorDB container profile:
+**Custom FalkorDB Container Resources**: For larger graphs, pass explicit CPU/memory options when starting the app:
 
 ```sql
--- SMALL: 0.5 CPU / 512MB request, 1 CPU / 1GB limit
-CALL <app_instance_name>.app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');
-
--- MEDIUM: 1 CPU / 2GB request, 2 CPU / 4GB limit
-CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'MEDIUM');
-
--- LARGE: 2 CPU / 4GB request, 4 CPU / 6GB limit
-CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'LARGE');
+CALL <app_instance_name>.app_public.start_app(
+    'FALKORDB_POOL',
+    'FALKORDB_WH',
+    OBJECT_CONSTRUCT(
+        'cpuRequest', 1,
+        'memoryRequest', '2G',
+        'cpuLimit', 2,
+        'memoryLimit', '4G'
+    )
+);
 ```
 
-To change profiles after the service is already running, stop it first:
+Resource option meanings:
+
+| Option | Meaning | Example |
+|---|---|---|
+| `cpuRequest` | CPU reserved for scheduling the FalkorDB container | `1`, `1.5`, `500m` |
+| `memoryRequest` | Memory reserved for scheduling the FalkorDB container | `2G`, `4Gi` |
+| `cpuLimit` | Maximum CPU the FalkorDB container can use | `2`, `4` |
+| `memoryLimit` | Maximum memory the FalkorDB container can use before it is constrained by SPCS | `4G`, `8Gi` |
+
+Requests must fit on the selected compute pool node. If the requested CPU/memory is larger than the pool can schedule, Snowflake will fail to schedule the service or report insufficient resources. Limits should be greater than or equal to requests and cannot effectively exceed the node capacity of the selected compute pool.
+
+### Open the FalkorDB Browser
+
+FalkorDB Browser is a web UI for exploring your graphs visually, inspecting nodes and relationships, and running Cypher queries interactively against the FalkorDB service.
+
+After `get_service_status()` shows the service is ready, get the public browser URL:
+
+```sql
+SHOW ENDPOINTS IN SERVICE <app_instance_name>.app_public.st_spcs;
+
+SELECT "ingress_url" AS browser_url
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE "name" = 'falkordb-browser';
+```
+
+Open the returned `browser_url` in your web browser to use the FalkorDB Browser UI. If the endpoint is not ready yet, wait for the service status to become `READY` and run the endpoint query again.
+
+To change container resources after the service is already running, stop it first:
 
 ```sql
 CALL <app_instance_name>.app_public.stop_app();
-CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'LARGE');
+CALL <app_instance_name>.app_public.start_app(
+    'FALKORDB_POOL',
+    'FALKORDB_WH',
+    OBJECT_CONSTRUCT('cpuRequest', 2, 'memoryRequest', '4G', 'cpuLimit', 4, 'memoryLimit', '8G')
+);
 ```
 
-**Advanced**: If you need custom resource sizes, create them manually **before** calling `start_app()`:
+**Advanced**: If you need a larger Snowflake compute pool or warehouse, create them manually **before** calling `start_app()`:
 
 ```sql
 -- Optional: Create custom compute pool (if you need different specs)
@@ -223,15 +256,18 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 **`start_app(poolname VARCHAR, whname VARCHAR)`**
 - Initializes the FalkorDB service with specified compute pool and warehouse names
 - Automatically creates the compute pool (CPU_X64_S) and warehouse (XSMALL) if they don't exist
-- Uses the `SMALL` FalkorDB container profile
+- Uses the default FalkorDB container resources: 1 CPU / 2GB request, 2 CPU / 4GB limit
 - If resources already exist, uses them instead of creating new ones
 - Example: `CALL app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH');`
 
-**`start_app_with_profile(poolname VARCHAR, whname VARCHAR, resource_profile VARCHAR)`**
-- Initializes the FalkorDB service with a selected container resource profile: `SMALL`, `MEDIUM`, or `LARGE`
-- Use `MEDIUM` or `LARGE` for larger graph loads that need more FalkorDB memory
-- Requires the service not to already exist; call `stop_app()` first when changing profiles
-- Example: `CALL app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'LARGE');`
+**`start_app(poolname VARCHAR, whname VARCHAR, options OBJECT)`**
+- Initializes the FalkorDB service with explicit container CPU/memory request and limit options
+- Supported options: `cpuRequest`, `memoryRequest`, `cpuLimit`, `memoryLimit`
+- `cpuRequest`/`memoryRequest` are used by Snowflake to schedule the container on a compute pool node
+- `cpuLimit`/`memoryLimit` cap how much CPU/memory the container can use
+- If requests are too large for the selected compute pool, Snowflake will fail to schedule the service or report insufficient resources
+- Requires the service not to already exist; call `stop_app()` first when changing resources
+- Example: `CALL app_public.start_app('FALKORDB_POOL', 'FALKORDB_WH', OBJECT_CONSTRUCT('cpuRequest', 2, 'memoryRequest', '4G', 'cpuLimit', 4, 'memoryLimit', '8G'));`
 
 **`load_csv(graph_name VARCHAR, cypher_query VARCHAR)`**
 - Imports data from your bound table (configured during installation) into a graph structure
@@ -261,17 +297,21 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 - Returns query results in Snowflake-compatible format
 - Example: `CALL app_public.graph_query('my_graph', 'MATCH (n) RETURN n LIMIT 10');`
 
-**`graph_query_to_table(graph_name VARCHAR, cypher_query VARCHAR, output_table VARCHAR)`**
-- Executes a Cypher query and writes the returned rows to a durable Snowflake table
+**`graph_query(graph_name VARCHAR, cypher_query VARCHAR, options OBJECT)`**
+- Executes a Cypher query and optionally writes the returned rows to a durable Snowflake table
 - The output table is created or replaced with `ROW_INDEX NUMBER` and `ROW_DATA VARIANT`
-- Use an unquoted fully qualified output table name: `DATABASE.SCHEMA.TABLE`
+- To write back, pass `OBJECT_CONSTRUCT('write', OBJECT_CONSTRUCT('outputTable', 'DATABASE.SCHEMA.TABLE'))`
 - Example:
 
 ```sql
-CALL <app_instance_name>.app_public.graph_query_to_table(
+CALL <app_instance_name>.app_public.graph_query(
     'airroutes',
     'MATCH (a:Airport) RETURN a.code AS code, a.name AS name LIMIT 100',
-    'AIRROUTES_DB.RESULTS.AIRPORT_QUERY_RESULTS'
+    OBJECT_CONSTRUCT(
+        'write', OBJECT_CONSTRUCT(
+            'outputTable', 'AIRROUTES_DB.RESULTS.AIRPORT_QUERY_RESULTS'
+        )
+    )
 );
 ```
 
@@ -283,7 +323,7 @@ GRANT CREATE TABLE ON SCHEMA AIRROUTES_DB.RESULTS TO APPLICATION <app_instance_n
 
 ### Cortex Agent Integration
 
-The agent is created after the normal FalkorDB setup flow. It does not start the service or load data by itself.
+The agent is created after the normal FalkorDB setup flow. It does not start the service by itself. It can load data only from an already-bound `consumer_data_table` reference after the user confirms the generated LOAD CSV mapping.
 
 Required flow:
 
@@ -308,7 +348,7 @@ CALL <app_instance_name>.graph.create_agent(
 
 **`graph.create_agent(agent_name VARCHAR, source_schema VARCHAR, working_schema VARCHAR)`**
 - Creates a Snowflake Cortex Agent that can be used from **AI & ML → Agents** or Snowflake Intelligence
-- Wires the agent to FalkorDB tools for listing graphs, inspecting graph schema, checking graph stats, explaining CSV loading, generating Cypher from natural language, and running Cypher through the Native App service
+- Wires the agent to FalkorDB tools for listing graphs, inspecting graph schema, checking graph stats, generating Cypher from natural language, loading already-bound Snowflake table data, and running Cypher through the Native App service
 - Uses the caller role's default/current warehouse as the agent tool execution warehouse, matching the Snowflake Cortex Agent custom-tool flow
 - Arguments:
 
@@ -359,6 +399,8 @@ GRANT CREATE VIEW ON SCHEMA WORKING_DB.WORKING_SCHEMA TO ROLE FALKORDB_AGENT_ROL
 
 After creating the agent, open **AI & ML → Agents** and select `FALKORDB_GRAPH_AGENT`.
 
+For loading data, the user/admin must bind the `consumer_data_table` reference first. The agent can help generate the `LOAD CSV FROM 'file://consumer_data.csv' AS row ...` mapping Cypher, ask which graph to load into if missing, and call its load tool after confirmation. The agent does not create the Snowflake reference binding itself.
+
 **`graph.get_agent_caller_grants(agent_name VARCHAR)`**
 - Prints optional `GRANT CALLER` statements for the configured source and working schemas
 - Example: `CALL <app_instance_name>.graph.get_agent_caller_grants('FALKORDB_GRAPH_AGENT');`
@@ -375,7 +417,7 @@ The repository also includes a Cortex Code skill at:
 .cortex/skills/falkordb-snowflake-native-app-skill
 ```
 
-Use it with Cortex Code when you want help writing FalkorDB Snowflake SQL, Cypher loading queries, profile sizing commands, or Cortex Agent setup.
+Use it with Cortex Code when you want help writing FalkorDB Snowflake SQL, Cypher loading queries, container resource options, or Cortex Agent setup.
 
 Install or register the skill in Cortex Code, then verify:
 
