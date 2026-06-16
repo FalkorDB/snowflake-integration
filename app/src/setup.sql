@@ -460,10 +460,95 @@ BEGIN
         )''';
 
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.run_cypher(input_agent_name VARCHAR, graph_name VARCHAR, cypher_query VARCHAR)
-        RETURNS STRING
+        RETURNS OBJECT
         LANGUAGE SQL
         AS
-        ''app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', cypher_query))''';
+        ''OBJECT_CONSTRUCT(
+            ''''graph_name'''', graph_name,
+            ''''cypher_query'''', cypher_query,
+            ''''result'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', cypher_query))
+        )''';
+
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE agent_tools.text_to_cypher(input_agent_name VARCHAR, graph_name VARCHAR, user_question VARCHAR)
+        RETURNS VARIANT
+        LANGUAGE JAVASCRIPT
+        EXECUTE AS RESTRICTED CALLER
+        AS
+        ''
+        var model = "claude-4-sonnet";
+
+        function scalar(sqlText, binds) {
+            var statement = snowflake.execute({sqlText: sqlText, binds: binds || []});
+            if (!statement.next()) {
+                return null;
+            }
+            return statement.getColumnValue(1);
+        }
+
+        function cleanCypher(text) {
+            if (text === null || text === undefined) {
+                return "";
+            }
+            var cleaned = String(text).trim();
+            cleaned = cleaned.replace(/^```[a-zA-Z]*\\\\s*/, "").replace(/```$/, "").trim();
+            return cleaned;
+        }
+
+        if (!INPUT_AGENT_NAME || !GRAPH_NAME || !USER_QUESTION) {
+            throw new Error("input_agent_name, graph_name, and user_question are required.");
+        }
+
+        var labels = scalar(
+            "SELECT app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', ?, ''''query'''', ''''CALL db.labels()''''))",
+            [GRAPH_NAME]
+        );
+        var relationshipTypes = scalar(
+            "SELECT app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', ?, ''''query'''', ''''CALL db.relationshipTypes()''''))",
+            [GRAPH_NAME]
+        );
+        var propertyKeys = scalar(
+            "SELECT app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', ?, ''''query'''', ''''CALL db.propertyKeys()''''))",
+            [GRAPH_NAME]
+        );
+        var stats = scalar(
+            "SELECT OBJECT_CONSTRUCT(''''node_count'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', ?, ''''query'''', ''''MATCH (n) RETURN count(n) AS node_count'''')), ''''relationship_count'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', ?, ''''query'''', ''''MATCH ()-[r]->() RETURN count(r) AS relationship_count'''')))",
+            [GRAPH_NAME, GRAPH_NAME]
+        );
+
+        var prompt = [
+            "You generate FalkorDB Cypher for Snowflake Agent tools.",
+            "Return only one Cypher query. Do not include markdown fences or explanations.",
+            "Prefer read-only MATCH/RETURN queries unless the user explicitly asks to mutate data.",
+            "Avoid unsupported subquery forms and avoid expensive all-graph anti-joins when a bounded approximation is safer.",
+            "If the exact query is likely too expensive, generate a safer bounded query with LIMIT and selective filters.",
+            "Graph name: " + GRAPH_NAME,
+            "Labels: " + labels,
+            "Relationship types: " + relationshipTypes,
+            "Property keys: " + propertyKeys,
+            "Graph stats: " + JSON.stringify(stats),
+            "User question: " + USER_QUESTION
+        ].join("\\\\n");
+
+        var rawResponse = scalar(
+            "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?)",
+            [model, prompt]
+        );
+
+        return {
+            model: model,
+            graph_name: GRAPH_NAME,
+            question: USER_QUESTION,
+            schema_context: {
+                labels: labels,
+                relationship_types: relationshipTypes,
+                property_keys: propertyKeys,
+                stats: stats
+            },
+            cypher: cleanCypher(rawResponse),
+            raw_response: rawResponse,
+            note: "Review the generated Cypher before calling run_cypher. Ask for confirmation before running mutating queries."
+        };
+        ''';
 
     EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE agent_tools.load_csv(input_agent_name VARCHAR, graph_name VARCHAR, cypher_query VARCHAR)
         RETURNS VARIANT
@@ -498,6 +583,8 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.load_csv_guidance(VARCHAR) TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.run_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.run_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.text_to_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.text_to_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
 
@@ -781,8 +868,8 @@ BEGIN
     seconds: 60
     tokens: 16000
 instructions:
-  response: "You are FalkorDB Graph Agent. Be concise. Explain generated Cypher before running mutating queries. Prefer read-only MATCH/RETURN queries unless the user explicitly asks to change graph data."
-  orchestration: "Always pass input_agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. Use load_csv_guidance when the user asks how to load data. To load data, first explain that consumer_data_table must already be bound by a user/admin. Ask which graph name to use if missing. Generate LOAD CSV mapping Cypher using row indexes and MERGE for idempotency, then ask for explicit confirmation before calling load_csv. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '. Agent tools use the caller role default warehouse."
+  response: "You are FalkorDB Graph Agent. Be concise. Always show the Cypher query generated or executed when answering query requests. Explain generated Cypher before running mutating queries. Prefer read-only MATCH/RETURN queries unless the user explicitly asks to change graph data."
+  orchestration: "Always pass input_agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. For difficult graph questions, call text_to_cypher before run_cypher so FalkorDB-specific Cypher is generated with graph schema context. Show the cypher field returned by text_to_cypher before running it. When using run_cypher, include the executed cypher_query from the tool result in your answer. Explain generated Cypher before running it, and ask for confirmation before mutating queries. Use load_csv_guidance when the user asks how to load data. To load data, first explain that consumer_data_table must already be bound by a user/admin. Ask which graph name to use if missing. Generate LOAD CSV mapping Cypher using row indexes and MERGE for idempotency, then ask for explicit confirmation before calling load_csv. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '. Agent tools use the caller role default warehouse."
   sample_questions:
     - question: "What graphs are available?"
     - question: "Inspect my graph schema and suggest useful Cypher queries."
@@ -833,7 +920,7 @@ tools:
   - tool_spec:
       type: "generic"
       name: "run_cypher"
-      description: "Run a Cypher query against a FalkorDB graph and return the result."
+      description: "Run a Cypher query against a FalkorDB graph and return both the executed cypher_query and result."
       input_schema:
         type: "object"
         properties:
@@ -850,6 +937,26 @@ tools:
           - "input_agent_name"
           - "graph_name"
           - "cypher_query"
+  - tool_spec:
+      type: "generic"
+      name: "text_to_cypher"
+      description: "Generate FalkorDB Cypher from a natural-language graph question using Snowflake Cortex and FalkorDB graph schema context. Returns the generated cypher and schema_context used. Use this before run_cypher for complex graph questions."
+      input_schema:
+        type: "object"
+        properties:
+          input_agent_name:
+            type: "string"
+            description: "The configured FalkorDB agent name."
+          graph_name:
+            type: "string"
+            description: "The FalkorDB graph name."
+          user_question:
+            type: "string"
+            description: "The user question or task to translate into FalkorDB Cypher."
+        required:
+          - "input_agent_name"
+          - "graph_name"
+          - "user_question"
   - tool_spec:
       type: "generic"
       name: "graph_stats"
@@ -935,6 +1042,12 @@ tool_resources:
       type: "warehouse"
       query_timeout: 120
     identifier: "' || app_name || '.AGENT_TOOLS.RUN_CYPHER"
+  text_to_cypher:
+    type: "procedure"
+    execution_environment:
+      type: "warehouse"
+      query_timeout: 120
+    identifier: "' || app_name || '.AGENT_TOOLS.TEXT_TO_CYPHER"
   load_csv:
     type: "procedure"
     execution_environment:
@@ -952,7 +1065,7 @@ tool_resources:
     EXECUTE IMMEDIATE 'GRANT USAGE ON AGENT IDENTIFIER(?) TO APPLICATION ROLE app_admin' USING (agent_fqn);
     EXECUTE IMMEDIATE 'GRANT USAGE ON AGENT IDENTIFIER(?) TO APPLICATION ROLE app_user' USING (agent_fqn);
 
-    RETURN 'Created FalkorDB Cortex Agent ' || agent_fqn || '. Grant SNOWFLAKE.CORTEX_AGENT_USER to the consumer role, then open AI & ML > Agents or Snowflake Intelligence.';
+    RETURN 'Created FalkorDB Cortex Agent ' || agent_fqn || '. Grant SNOWFLAKE.CORTEX_AGENT_USER and SNOWFLAKE.CORTEX_USER to the consumer role, then open AI & ML > Agents or Snowflake Intelligence.';
 END
 $$;
 GRANT USAGE ON PROCEDURE graph.create_agent(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin;
