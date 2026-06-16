@@ -36,17 +36,49 @@ CALL <app_instance_name>.app_public.get_service_status();
 
 Wait for the service status to show `READY` before proceeding (typically 2-3 minutes).
 
-Default resources use a `CPU_X64_S` compute pool with the `SMALL` FalkorDB container profile: 0.5 CPU / 512MB RAM requested and 1 CPU / 1GB RAM limit. For larger graph loads, start the app with a larger profile:
+Default resources use a `CPU_X64_S` compute pool with FalkorDB container resources of 1 CPU / 2GB RAM requested and 2 CPU / 4GB RAM limit. For larger graph loads, start the app with explicit resource options:
 
 ```sql
--- MEDIUM: 1 CPU / 2GB request, 2 CPU / 4GB limit
-CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'MEDIUM');
-
--- LARGE: 2 CPU / 4GB request, 4 CPU / 6GB limit
-CALL <app_instance_name>.app_public.start_app_with_profile('FALKORDB_POOL', 'FALKORDB_WH', 'LARGE');
+CALL <app_instance_name>.app_public.start_app(
+  'FALKORDB_POOL',
+  'FALKORDB_WH',
+  OBJECT_CONSTRUCT(
+    'cpuRequest', 2,
+    'memoryRequest', '4G',
+    'cpuLimit', 4,
+    'memoryLimit', '8G'
+  )
+);
 ```
 
-To change profiles after the service is already running, call `stop_app()` first, then start with the desired profile.
+Resource option meanings:
+
+| Option | Meaning | Example |
+|---|---|---|
+| `cpuRequest` | CPU reserved for scheduling the FalkorDB container | `1`, `1.5`, `500m` |
+| `memoryRequest` | Memory reserved for scheduling the FalkorDB container | `2G`, `4Gi` |
+| `cpuLimit` | Maximum CPU the FalkorDB container can use | `2`, `4` |
+| `memoryLimit` | Maximum memory the FalkorDB container can use before it is constrained by SPCS | `4G`, `8Gi` |
+
+Requests must fit on the selected compute pool node. If the requested CPU/memory is larger than the pool can schedule, Snowflake will fail to schedule the service or report insufficient resources. Limits should be greater than or equal to requests and cannot effectively exceed the node capacity of the selected compute pool.
+
+### Open the FalkorDB Browser
+
+FalkorDB Browser is a web UI for exploring your graphs visually, inspecting nodes and relationships, and running Cypher queries interactively against the FalkorDB service.
+
+After `get_service_status()` shows the service is ready, get the public browser URL:
+
+```sql
+SHOW ENDPOINTS IN SERVICE <app_instance_name>.app_public.st_spcs;
+
+SELECT "ingress_url" AS browser_url
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE "name" = 'falkordb-browser';
+```
+
+Open the returned `browser_url` in your web browser to use the FalkorDB Browser UI. If the endpoint is not ready yet, wait for the service status to become `READY` and run the endpoint query again.
+
+To change container resources after the service is already running, call `stop_app()` first, then start with the desired options.
 
 ## Basic Usage
 
@@ -147,13 +179,17 @@ CALL <app_instance_name>.app_public.graph_query('social_graph',
 
 ### Writing Query Results Back to Snowflake
 
-Use `graph_query_to_table()` when you want Cypher query results to persist as a Snowflake table:
+Pass a `write.outputTable` option to `graph_query()` when you want Cypher query results to persist as a Snowflake table:
 
 ```sql
-CALL <app_instance_name>.app_public.graph_query_to_table(
+CALL <app_instance_name>.app_public.graph_query(
   'social_graph',
   'MATCH (p:Person) RETURN p.name AS name, p.age AS age',
-  'EXAMPLE_DB.RESULT_SCHEMA.PERSON_RESULTS'
+  OBJECT_CONSTRUCT(
+    'write', OBJECT_CONSTRUCT(
+      'outputTable', 'EXAMPLE_DB.RESULT_SCHEMA.PERSON_RESULTS'
+    )
+  )
 );
 ```
 
@@ -402,7 +438,7 @@ CALL <app_instance_name>.app_public.get_service_containers();
 
 ### Cortex Agent Integration
 
-FalkorDB can create a Snowflake Cortex Agent so users can work with graph data from **AI & ML → Agents** or Snowflake Intelligence instead of only the browser UI. The agent uses Snowflake custom tools backed by the Native App service to list graphs, inspect labels/relationships/properties, check graph stats, explain CSV loading, generate Cypher, and run Cypher queries.
+FalkorDB can create a Snowflake Cortex Agent so users can work with graph data from **AI & ML → Agents** or Snowflake Intelligence instead of only the browser UI. The agent uses Snowflake custom tools backed by the Native App service to list graphs, inspect labels/relationships/properties, check graph stats, generate Cypher, load already-bound Snowflake table data, and run Cypher queries.
 
 Create the agent after the FalkorDB service has been started:
 
@@ -453,6 +489,8 @@ Find the top connected nodes in my graph.
 Generate a Cypher query for this question and run it.
 How do I load my bound Snowflake table into FalkorDB?
 ```
+
+For loading data, the user/admin must bind the `consumer_data_table` reference first. The agent can generate the `LOAD CSV FROM 'file://consumer_data.csv' AS row ...` mapping Cypher, ask which graph to load into when the graph name is missing, and call its load tool after confirmation. The agent does not create the Snowflake reference binding itself.
 
 To print optional caller grants for the configured source and working schemas:
 
