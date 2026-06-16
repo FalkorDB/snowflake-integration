@@ -129,7 +129,7 @@ The consumer role must have:
 
 ```sql
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
-GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <consumer_role>;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION <app_instance_name>;
 GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <app_instance_name>;
 ```
 
@@ -137,6 +137,6 @@ Then use Snowflake UI: AI & ML -> Agents or Snowflake Intelligence.
 
 The deployed agent can load data only from the already-bound `consumer_data_table` reference. It should ask for a graph name if missing, generate `LOAD CSV FROM 'file://consumer_data.csv' AS row ...` mapping Cypher from the table columns, prefer `MERGE`, and ask for confirmation before running the load tool.
 
-For difficult graph questions, the deployed agent should call `text_to_cypher(input_agent_name, graph_name, user_question)` before `run_cypher`. The tool uses a default Snowflake Cortex model and FalkorDB graph schema context to generate Cypher, and returns the generated `cypher` plus the `schema_context` used. The schema context is labels, relationship types, property keys, and graph stats from the selected FalkorDB graph, not the Snowflake source schema. The role using the agent should have both `SNOWFLAKE.CORTEX_AGENT_USER` and `SNOWFLAKE.CORTEX_USER`, and the application should have imported privileges on the `SNOWFLAKE` database.
+For difficult graph questions, the deployed agent should call `text_to_cypher(input_agent_name, graph_name, user_question)` before `run_cypher`. The tool uses a default Snowflake Cortex model and FalkorDB graph schema context to generate Cypher, and returns the generated `cypher` plus the `schema_context` used. The schema context is labels, relationship types, property keys, and graph stats from the selected FalkorDB graph, not the Snowflake source schema. The role using the agent should have `SNOWFLAKE.CORTEX_AGENT_USER`; the application should have `SNOWFLAKE.CORTEX_USER` and imported privileges on the `SNOWFLAKE` database.
 
 When answering query requests, show the Cypher query. `text_to_cypher` returns the generated `cypher`, and `run_cypher` returns both the executed `cypher_query` and `result`.
