@@ -84,6 +84,19 @@ CALL <app_instance_name>.app_public.graph_query(
 );
 ```
 
+## Agent text to Cypher
+
+```sql
+-- Grant model access to the role that uses the Snowflake Agent.
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION <app_instance_name>;
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <app_instance_name>;
+```
+
+The Agent can call `text_to_cypher(input_agent_name, graph_name, user_question)` for difficult graph questions, review the returned `cypher`, then call `run_cypher`.
+
+`text_to_cypher` passes FalkorDB graph schema context to Cortex: labels, relationship types, property keys, and graph stats for the selected graph. `run_cypher` returns the executed `cypher_query` with the result so the Agent can show what ran.
+
 ## Write query results to Snowflake
 
 ```sql

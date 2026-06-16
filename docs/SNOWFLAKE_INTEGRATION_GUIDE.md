@@ -440,6 +440,8 @@ CALL <app_instance_name>.app_public.get_service_containers();
 
 FalkorDB can create a Snowflake Cortex Agent so users can work with graph data from **AI & ML → Agents** or Snowflake Intelligence instead of only the browser UI. The agent uses Snowflake custom tools backed by the Native App service to list graphs, inspect labels/relationships/properties, check graph stats, generate Cypher, load already-bound Snowflake table data, and run Cypher queries.
 
+The schema context passed to `text_to_cypher` comes from the selected FalkorDB graph: labels, relationship types, property keys, and basic graph stats. It is not the Snowflake source schema passed to `graph.create_agent`.
+
 Create the agent after the FalkorDB service has been started:
 
 ```sql
@@ -457,6 +459,10 @@ Grant the Snowflake Cortex Agent role to the consumer role that will use the age
 ```sql
 USE ROLE ACCOUNTADMIN;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
+
+-- Required by the Native App so text_to_cypher can resolve SNOWFLAKE.CORTEX.COMPLETE.
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION <app_instance_name>;
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <app_instance_name>;
 ```
 
 Minimal role and schema setup:
@@ -468,6 +474,8 @@ CREATE ROLE IF NOT EXISTS FALKORDB_AGENT_ROLE;
 GRANT APPLICATION ROLE <app_instance_name>.app_admin TO ROLE FALKORDB_AGENT_ROLE;
 GRANT APPLICATION ROLE <app_instance_name>.app_user TO ROLE FALKORDB_AGENT_ROLE;
 GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE FALKORDB_AGENT_ROLE;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION <app_instance_name>;
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <app_instance_name>;
 
 GRANT USAGE ON DATABASE SOURCE_DB TO ROLE FALKORDB_AGENT_ROLE;
 GRANT USAGE ON SCHEMA SOURCE_DB.SOURCE_SCHEMA TO ROLE FALKORDB_AGENT_ROLE;
@@ -489,6 +497,8 @@ Find the top connected nodes in my graph.
 Generate a Cypher query for this question and run it.
 How do I load my bound Snowflake table into FalkorDB?
 ```
+
+When the agent generates or runs Cypher, it should show the Cypher query in the response. The `text_to_cypher` tool returns the generated `cypher`, and the `run_cypher` tool returns both the executed `cypher_query` and the result.
 
 For loading data, the user/admin must bind the `consumer_data_table` reference first. The agent can generate the `LOAD CSV FROM 'file://consumer_data.csv' AS row ...` mapping Cypher, ask which graph to load into when the graph name is missing, and call its load tool after confirmation. The agent does not create the Snowflake reference binding itself.
 
