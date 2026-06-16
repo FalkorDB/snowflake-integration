@@ -14,10 +14,10 @@ Use this skill when the user asks about FalkorDB inside Snowflake, Snowflake Nat
 
 - The Snowflake warehouse runs SQL, procedures, staging, and Cortex Agent tool execution.
 - The Snowpark Container Services compute pool runs the FalkorDB container.
-- The FalkorDB profile controls the container request/limit inside the compute pool.
+- FalkorDB container resource options control the request/limit inside the compute pool.
 - The app creates an `XSMALL` warehouse and `CPU_X64_S` compute pool by default if they do not already exist.
-- The default FalkorDB profile is `SMALL`.
-- `graph_query_to_table` writes Cypher query results into durable Snowflake tables as `ROW_INDEX` and `ROW_DATA`.
+- The default FalkorDB container resources request 1 CPU / 2GB RAM and limit at 2 CPU / 4GB RAM.
+- `graph_query` can write Cypher query results into durable Snowflake tables when called with `write.outputTable` options.
 
 ## Standard setup flow
 
@@ -31,16 +31,38 @@ CALL <app_instance_name>.app_public.get_service_status();
 CALL <app_instance_name>.app_public.graph_list();
 ```
 
-For larger FalkorDB container allocation:
+To open the FalkorDB Browser, which lets users visually explore graphs, inspect nodes and relationships, and run Cypher queries interactively:
+
+```sql
+SHOW ENDPOINTS IN SERVICE <app_instance_name>.app_public.st_spcs;
+
+SELECT "ingress_url" AS browser_url
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE "name" = 'falkordb-browser';
+```
+
+Open the returned `browser_url` in a web browser after the service is `READY`.
+
+For custom FalkorDB container allocation:
 
 ```sql
 CALL <app_instance_name>.app_public.stop_app();
-CALL <app_instance_name>.app_public.start_app_with_profile(
+CALL <app_instance_name>.app_public.start_app(
   'FALKORDB_POOL',
   'FALKORDB_WH',
-  'LARGE'
+  OBJECT_CONSTRUCT(
+    'cpuRequest', 2,
+    'memoryRequest', '4G',
+    'cpuLimit', 4,
+    'memoryLimit', '8G'
+  )
 );
 ```
+
+Explain resource options as:
+- `cpuRequest` / `memoryRequest`: reserved resources Snowflake uses for scheduling the container on the compute pool node.
+- `cpuLimit` / `memoryLimit`: maximum resources the FalkorDB container can use.
+- Requests must fit the selected compute pool; if they are too large, Snowflake can fail scheduling or report insufficient resources.
 
 ## Loading data
 
@@ -76,10 +98,14 @@ CALL <app_instance_name>.app_public.graph_query(
 To persist query results in Snowflake:
 
 ```sql
-CALL <app_instance_name>.app_public.graph_query_to_table(
+CALL <app_instance_name>.app_public.graph_query(
   'my_graph',
   'MATCH (n) RETURN n.name AS name LIMIT 100',
-  'RESULT_DB.RESULT_SCHEMA.GRAPH_QUERY_RESULTS'
+  OBJECT_CONSTRUCT(
+    'write', OBJECT_CONSTRUCT(
+      'outputTable', 'RESULT_DB.RESULT_SCHEMA.GRAPH_QUERY_RESULTS'
+    )
+  )
 );
 ```
 
@@ -104,3 +130,5 @@ GRANT DATABASE ROLE SNOWFLAKE.CORTEX_AGENT_USER TO ROLE <consumer_role>;
 ```
 
 Then use Snowflake UI: AI & ML -> Agents or Snowflake Intelligence.
+
+The deployed agent can load data only from the already-bound `consumer_data_table` reference. It should ask for a graph name if missing, generate `LOAD CSV FROM 'file://consumer_data.csv' AS row ...` mapping Cypher from the table columns, prefer `MERGE`, and ask for confirmation before running the load tool.
