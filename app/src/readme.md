@@ -326,7 +326,7 @@ GRANT CREATE TABLE ON SCHEMA AIRROUTES_DB.RESULTS TO APPLICATION <app_instance_n
 
 The agent is created after the normal FalkorDB setup flow. It does not start the service by itself. It can load data only from an already-bound `consumer_data_table` reference after the user confirms the generated LOAD CSV mapping.
 
-For difficult graph questions, the agent can call its `text_to_cypher` tool before execution. This tool uses a default Snowflake Cortex model to generate FalkorDB Cypher from the FalkorDB graph schema and the user's question, then the agent can explain the generated query and call `run_cypher`.
+For difficult graph questions, the agent can call its `text_to_cypher` tool before execution. This tool uses the default Snowflake Cortex model `claude-4-sonnet` to generate FalkorDB Cypher from the FalkorDB graph schema and the user's question, then the agent can explain the generated query and call `run_cypher`. If the user explicitly asks for a different Cortex model, the agent can pass it as the optional fourth `model_name` argument.
 
 The graph schema passed to `text_to_cypher` is the FalkorDB schema for the selected graph: labels, relationship types, property keys, and basic graph stats. It is not the Snowflake source schema passed to `graph.create_agent`.
 
@@ -411,6 +411,17 @@ GRANT CREATE VIEW ON SCHEMA WORKING_DB.WORKING_SCHEMA TO ROLE FALKORDB_AGENT_ROL
 After creating the agent, open **AI & ML → Agents** and select `FALKORDB_GRAPH_AGENT`.
 
 When the agent generates or runs a Cypher query, it should show the Cypher in the response. The `run_cypher` tool returns both the executed `cypher_query` and the query result, and `text_to_cypher` returns the generated `cypher` before execution.
+
+To override the default text-to-Cypher model directly:
+
+```sql
+CALL <app_instance_name>.agent_tools.text_to_cypher(
+    'FALKORDB_GRAPH_AGENT',
+    'airroutes',
+    'Find the top 10 airports by outgoing routes',
+    'claude-4-sonnet'
+);
+```
 
 For loading data, the user/admin must bind the `consumer_data_table` reference first. The agent can help generate the `LOAD CSV FROM 'file://consumer_data.csv' AS row ...` mapping Cypher, ask which graph to load into if missing, and call its load tool after confirmation. The agent does not create the Snowflake reference binding itself.
 

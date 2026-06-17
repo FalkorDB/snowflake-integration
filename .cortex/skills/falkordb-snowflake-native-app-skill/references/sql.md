@@ -93,9 +93,9 @@ GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION <app_instance_name>;
 GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <app_instance_name>;
 ```
 
-The Agent can call `text_to_cypher(input_agent_name, graph_name, user_question)` for difficult graph questions, review the returned `cypher`, then call `run_cypher`.
+The Agent can call `text_to_cypher(input_agent_name, graph_name, user_question)` for difficult graph questions, review the returned `cypher`, then call `run_cypher`. The default model is `claude-4-sonnet`; when the user explicitly requests another Cortex model, pass it as `text_to_cypher(input_agent_name, graph_name, user_question, model_name)`.
 
-`text_to_cypher` passes FalkorDB graph schema context to Cortex: labels, relationship types, property keys, and graph stats for the selected graph. `run_cypher` returns the executed `cypher_query` with the result so the Agent can show what ran.
+`text_to_cypher` passes FalkorDB graph schema context to Cortex: labels, relationship types, property keys, and graph stats for the selected graph. It returns the generated `cypher`, selected `model`, and schema context. `run_cypher` returns the executed `cypher_query` with the result so the Agent can show what ran.
 
 ## Write query results to Snowflake
 

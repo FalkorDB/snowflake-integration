@@ -500,6 +500,17 @@ How do I load my bound Snowflake table into FalkorDB?
 
 When the agent generates or runs Cypher, it should show the Cypher query in the response. The `text_to_cypher` tool returns the generated `cypher`, and the `run_cypher` tool returns both the executed `cypher_query` and the result.
 
+By default, `text_to_cypher` uses `claude-4-sonnet`. To use a different Snowflake Cortex model for one generation, pass the optional fourth `model_name` argument:
+
+```sql
+CALL <app_instance_name>.agent_tools.text_to_cypher(
+  'FALKORDB_GRAPH_AGENT',
+  'airroutes',
+  'Find the top 10 airports by outgoing routes',
+  'claude-4-sonnet'
+);
+```
+
 For loading data, the user/admin must bind the `consumer_data_table` reference first. The agent can generate the `LOAD CSV FROM 'file://consumer_data.csv' AS row ...` mapping Cypher, ask which graph to load into when the graph name is missing, and call its load tool after confirmation. The agent does not create the Snowflake reference binding itself.
 
 To print optional caller grants for the configured source and working schemas:
