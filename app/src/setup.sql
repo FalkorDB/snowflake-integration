@@ -469,13 +469,16 @@ BEGIN
             ''''result'''', app_public.graph_query_raw(OBJECT_CONSTRUCT(''''graph_name'''', graph_name, ''''query'''', cypher_query))
         )''';
 
-    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE agent_tools.text_to_cypher(input_agent_name VARCHAR, graph_name VARCHAR, user_question VARCHAR)
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE agent_tools.text_to_cypher(input_agent_name VARCHAR, graph_name VARCHAR, user_question VARCHAR, model_name VARCHAR)
         RETURNS VARIANT
         LANGUAGE JAVASCRIPT
         EXECUTE AS OWNER
         AS
         ''
-        var model = "claude-4-sonnet";
+        var defaultModel = "claude-4-sonnet";
+        var model = MODEL_NAME === null || MODEL_NAME === undefined || String(MODEL_NAME).trim() === ""
+            ? defaultModel
+            : String(MODEL_NAME).trim();
 
         function scalar(sqlText, binds) {
             var statement = snowflake.execute({sqlText: sqlText, binds: binds || []});
@@ -496,6 +499,9 @@ BEGIN
 
         if (!INPUT_AGENT_NAME || !GRAPH_NAME || !USER_QUESTION) {
             throw new Error("input_agent_name, graph_name, and user_question are required.");
+        }
+        if (model.length > 128 || !/^[A-Za-z0-9_.:-]+$/.test(model)) {
+            throw new Error("model_name must contain only letters, digits, underscores, dots, colons, or hyphens.");
         }
 
         var labels = scalar(
@@ -550,6 +556,18 @@ BEGIN
         };
         ''';
 
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE agent_tools.text_to_cypher(input_agent_name VARCHAR, graph_name VARCHAR, user_question VARCHAR)
+        RETURNS VARIANT
+        LANGUAGE SQL
+        EXECUTE AS OWNER
+        AS
+        ''DECLARE
+            generated VARIANT;
+        BEGIN
+            CALL agent_tools.text_to_cypher(:input_agent_name, :graph_name, :user_question, NULL) INTO :generated;
+            RETURN generated;
+        END''';
+
     EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE agent_tools.load_csv(input_agent_name VARCHAR, graph_name VARCHAR, cypher_query VARCHAR)
         RETURNS VARIANT
         LANGUAGE SQL
@@ -585,6 +603,8 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION agent_tools.run_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.text_to_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.text_to_cypher(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.text_to_cypher(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.text_to_cypher(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE agent_tools.load_csv(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
 
@@ -869,7 +889,7 @@ BEGIN
     tokens: 16000
 instructions:
   response: "You are FalkorDB Graph Agent. Be concise. Always show the Cypher query generated or executed when answering query requests. Explain generated Cypher before running mutating queries. Prefer read-only MATCH/RETURN queries unless the user explicitly asks to change graph data."
-  orchestration: "Always pass input_agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. For difficult graph questions, call text_to_cypher before run_cypher so FalkorDB-specific Cypher is generated with graph schema context. Show the cypher field returned by text_to_cypher before running it. When using run_cypher, include the executed cypher_query from the tool result in your answer. Explain generated Cypher before running it, and ask for confirmation before mutating queries. Use load_csv_guidance when the user asks how to load data. To load data, first explain that consumer_data_table must already be bound by a user/admin. Ask which graph name to use if missing. Generate LOAD CSV mapping Cypher using row indexes and MERGE for idempotency, then ask for explicit confirmation before calling load_csv. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '. Agent tools use the caller role default warehouse."
+  orchestration: "Always pass input_agent_name=' || normalized_agent_name || ' when calling tools. Use get_context first for configured schemas. Use list_graphs to discover loaded graphs. Use inspect_graph and graph_stats before generating Cypher when schema or size is unknown. For difficult graph questions, call text_to_cypher before run_cypher so FalkorDB-specific Cypher is generated with graph schema context. Use the default text-to-Cypher model unless the user explicitly asks for a specific Snowflake Cortex model; when requested, pass that model as model_name. Show the cypher field returned by text_to_cypher before running it. When using run_cypher, include the executed cypher_query from the tool result in your answer. Explain generated Cypher before running it, and ask for confirmation before mutating queries. Use load_csv_guidance when the user asks how to load data. To load data, first explain that consumer_data_table must already be bound by a user/admin. Ask which graph name to use if missing. Generate LOAD CSV mapping Cypher using row indexes and MERGE for idempotency, then ask for explicit confirmation before calling load_csv. Use run_cypher to execute Cypher against FalkorDB. Source schema is ' || source_schema || ' and working schema is ' || working_schema || '. Agent tools use the caller role default warehouse."
   sample_questions:
     - question: "What graphs are available?"
     - question: "Inspect my graph schema and suggest useful Cypher queries."
@@ -940,7 +960,7 @@ tools:
   - tool_spec:
       type: "generic"
       name: "text_to_cypher"
-      description: "Generate FalkorDB Cypher from a natural-language graph question using Snowflake Cortex and FalkorDB graph schema context. Returns the generated cypher and schema_context used. Use this before run_cypher for complex graph questions."
+      description: "Generate FalkorDB Cypher from a natural-language graph question using Snowflake Cortex and FalkorDB graph schema context. Returns the generated cypher, selected model, and schema_context used. Use this before run_cypher for complex graph questions. Pass model_name only when the user explicitly requests a specific Cortex model."
       input_schema:
         type: "object"
         properties:
@@ -953,6 +973,9 @@ tools:
           user_question:
             type: "string"
             description: "The user question or task to translate into FalkorDB Cypher."
+          model_name:
+            type: "string"
+            description: "Optional Snowflake Cortex model for Cypher generation. Defaults to claude-4-sonnet when omitted."
         required:
           - "input_agent_name"
           - "graph_name"
