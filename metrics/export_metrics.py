@@ -8,7 +8,8 @@ Sources:
   - APPLICATION_STATE  → cloud_region, cloud_vendor, cloud_version,
                           hs_recurring_billing_start_date, hs_status,
                           db_name, cloud_db_name, hs_name, hs_last_modified_at
-  - LISTING_EVENTS_DAILY → deployment_type, subscription_plan, email
+  - LISTING_EVENTS_DAILY → deployment_type, subscription_plan, email,
+                            first_name, last_name
 
 Hardcoded (no Snowflake source):
   - cloud_provider = "snowflake"
@@ -141,7 +142,8 @@ def query_application_state(cursor, listing_filter):
 def query_listing_events(cursor, listing_filter):
     """Pull per-consumer event data from LISTING_EVENTS_DAILY.
 
-    Fields used for: deployment_type, subscription_plan, email.
+    Fields used for: deployment_type, subscription_plan, email, first_name,
+    last_name.
     """
     return run_query(
         cursor,
@@ -150,7 +152,9 @@ def query_listing_events(cursor, listing_filter):
             consumer_account_locator,
             consumer_account_name,
             event_type,
-            consumer_email
+            consumer_email,
+            consumer_metadata:first_name::string AS first_name,
+            consumer_metadata:last_name::string AS last_name
         FROM snowflake.data_sharing_usage.listing_events_daily
         WHERE listing_name LIKE %s
           AND event_type IN ('GET', 'TRIAL', 'PURCHASE')
@@ -247,6 +251,10 @@ def build_subscriptions(app_state_rows, events_rows, falkordb_version):
         # Prefer rows that have email
         if row.get("consumer_email") and not events_by_locator[locator].get("consumer_email"):
             events_by_locator[locator]["consumer_email"] = row["consumer_email"]
+        if row.get("first_name") and not events_by_locator[locator].get("first_name"):
+            events_by_locator[locator]["first_name"] = row["first_name"]
+        if row.get("last_name") and not events_by_locator[locator].get("last_name"):
+            events_by_locator[locator]["last_name"] = row["last_name"]
 
     subscriptions = []
     for install in app_state_rows:
@@ -279,6 +287,8 @@ def build_subscriptions(app_state_rows, events_rows, falkordb_version):
             "hs_last_modified_at": transform_date(last_upgraded) or transform_date(created_on),
             "subscription_plan": transform_subscription_plan(event_type),
             "email": event_row.get("consumer_email") or "",
+            "first_name": event_row.get("first_name") or "",
+            "last_name": event_row.get("last_name") or "",
         }
         subscriptions.append(subscription)
 
