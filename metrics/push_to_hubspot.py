@@ -12,6 +12,10 @@ HubSpot fields pushed per consumer:
   subscription_id_omnistrate, deployment_type, hs_last_modified_at,
   subscription_plan, email
 
+HubSpot associations:
+  If a consumer email is available, the script upserts a contact and associates
+  it to the subscription so it appears under Contacts on the subscription record.
+
 Required env var:
   HUBSPOT_ACCESS_TOKEN - Private App token from HubSpot
 
@@ -37,6 +41,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 HUBSPOT_BASE = "https://api.hubapi.com"
+SUBSCRIPTION_TO_CONTACT_ASSOCIATION_TYPE_ID = 295
 
 # HubSpot subscription fields we manage. Keep legacy names and add aliases
 # used by the current HubSpot record layout.
@@ -179,6 +184,88 @@ def upsert_subscription(token: str, properties: dict) -> str:
         return new_id
 
 
+def search_contact(token: str, email: str) -> str | None:
+    """Find an existing contact by email."""
+    url = f"{HUBSPOT_BASE}/crm/v3/objects/contacts/search"
+    payload = {
+        "filterGroups": [
+            {
+                "filters": [
+                    {
+                        "propertyName": "email",
+                        "operator": "EQ",
+                        "value": email,
+                    }
+                ]
+            }
+        ],
+        "properties": ["email"],
+        "limit": 1,
+    }
+    resp = requests.post(url, headers=_headers(token), json=payload, timeout=15)
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+    return results[0]["id"] if results else None
+
+
+def upsert_contact(token: str, sub: dict) -> str:
+    """Create or update a HubSpot contact. Returns the contact id."""
+    email = str(sub.get("email") or "").strip()
+    if not email:
+        raise ValueError("Cannot upsert contact without email")
+
+    properties = {"email": email}
+    if sub.get("first_name"):
+        properties["firstname"] = str(sub["first_name"])
+    if sub.get("last_name"):
+        properties["lastname"] = str(sub["last_name"])
+
+    existing_id = search_contact(token, email)
+    if existing_id:
+        url = f"{HUBSPOT_BASE}/crm/v3/objects/contacts/{existing_id}"
+        update_properties = {k: v for k, v in properties.items() if k != "email"}
+        if update_properties:
+            resp = requests.patch(
+                url,
+                headers=_headers(token),
+                json={"properties": update_properties},
+                timeout=15,
+            )
+            if not resp.ok:
+                log.error("HubSpot contact PATCH error %s: %s", resp.status_code, resp.text)
+            resp.raise_for_status()
+        log.info("Upserted contact for subscription '%s' (id=%s)", sub.get("hs_name", ""), existing_id)
+        return existing_id
+
+    url = f"{HUBSPOT_BASE}/crm/v3/objects/contacts"
+    resp = requests.post(url, headers=_headers(token), json={"properties": properties}, timeout=15)
+    if not resp.ok:
+        log.error("HubSpot contact POST error %s: %s", resp.status_code, resp.text)
+    resp.raise_for_status()
+    new_id = resp.json()["id"]
+    log.info("Created contact for subscription '%s' (id=%s)", sub.get("hs_name", ""), new_id)
+    return new_id
+
+
+def associate_contact_to_subscription(token: str, subscription_id: str, contact_id: str) -> None:
+    """Associate a contact with a subscription using HubSpot's defined type."""
+    url = (
+        f"{HUBSPOT_BASE}/crm/v4/objects/subscriptions/{subscription_id}"
+        f"/associations/contacts/{contact_id}"
+    )
+    payload = [
+        {
+            "associationCategory": "HUBSPOT_DEFINED",
+            "associationTypeId": SUBSCRIPTION_TO_CONTACT_ASSOCIATION_TYPE_ID,
+        }
+    ]
+    resp = requests.put(url, headers=_headers(token), json=payload, timeout=15)
+    if not resp.ok:
+        log.error("HubSpot association error %s: %s", resp.status_code, resp.text)
+    resp.raise_for_status()
+    log.info("Associated subscription id=%s with contact id=%s", subscription_id, contact_id)
+
+
 # ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
@@ -198,7 +285,11 @@ def push_subscriptions(token: str, subscriptions: list[dict]) -> None:
 
         # Only send the fields we manage.
         properties = {field: str(sub.get(field, "")) for field in SUBSCRIPTION_FIELDS}
-        upsert_subscription(token, properties)
+        subscription_id = upsert_subscription(token, properties)
+
+        if sub.get("email"):
+            contact_id = upsert_contact(token, sub)
+            associate_contact_to_subscription(token, subscription_id, contact_id)
 
 
 def main() -> None:
