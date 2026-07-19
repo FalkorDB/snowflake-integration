@@ -15,7 +15,11 @@ Hardcoded (no Snowflake source):
   - cloud_provider = "snowflake"
   - node_instance_type = "none"
   - subscription_id_omnistrate = ""
-  - falkordb_version = "need to add this" (until app_metadata is deployed)
+
+Resolved from the bundled app image:
+  - falkordb_version: the actual FalkorDB server version (e.g. "v4.20.1"),
+    probed via docker from the text-to-cypher image referenced in setup.sql;
+    falls back to the image tag if Docker is unavailable.
 
 Environment variables (required):
     SNOWFLAKE_ACCOUNT   - Snowflake account identifier
@@ -31,6 +35,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -218,13 +223,60 @@ def transform_hs_name(locator: str) -> str:
     return f"instance-{locator.lower()}" if locator else ""
 
 
-def get_falkordb_version() -> str:
+def get_bundled_image_tag() -> str:
+    """Read the bundled text-to-cypher image tag from setup.sql (e.g. 'text-to-cypher:v0.2.6')."""
     setup_sql = Path(__file__).resolve().parents[1] / "app" / "src" / "setup.sql"
     setup_text = setup_sql.read_text()
     match = re.search(r"'falkordb_version'\s+AS\s+key,\s*'([^']+)'", setup_text, re.IGNORECASE)
     if not match:
         raise ValueError(f"Could not find falkordb_version in {setup_sql}")
     return match.group(1)
+
+
+def module_ver_to_semver(module_ver: int) -> str:
+    """FalkorDB MODULE LIST integer version → semver string (42001 → v4.20.1)."""
+    major = module_ver // 10000
+    minor = (module_ver // 100) % 100
+    patch = module_ver % 100
+    return f"v{major}.{minor}.{patch}"
+
+
+def get_falkordb_version() -> str:
+    """Resolve the actual FalkorDB server version bundled in the app image.
+
+    The text-to-cypher image is built FROM falkordb/falkordb, so the real
+    FalkorDB version isn't recorded in any file. We start the image's
+    redis-server with the graph module in a throwaway container and read the
+    module version from MODULE LIST. Falls back to the text-to-cypher image
+    tag from setup.sql if Docker isn't available or the probe fails.
+    """
+    image_tag = get_bundled_image_tag()
+    image = f"falkordb/{image_tag}"
+    probe = (
+        "redis-server --loadmodule /var/lib/falkordb/bin/falkordb.so"
+        " --daemonize yes >/dev/null 2>&1;"
+        " for i in $(seq 30); do"
+        '   v=$(redis-cli MODULE LIST 2>/dev/null | grep -A2 "^graph$" | tail -1);'
+        '   case "$v" in [0-9]*) echo "$v"; exit 0;; esac;'
+        "   sleep 1;"
+        " done; exit 1"
+    )
+    try:
+        result = subprocess.run(
+            ["docker", "run", "--rm", "--entrypoint", "bash", image, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        module_ver = int(result.stdout.strip())
+        return module_ver_to_semver(module_ver)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        print(
+            f"Warning: could not resolve FalkorDB version from {image} ({exc}); "
+            f"falling back to image tag {image_tag}",
+            file=sys.stderr,
+        )
+        return image_tag
 
 
 # ---------------------------------------------------------------------------
