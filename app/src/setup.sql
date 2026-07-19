@@ -400,6 +400,30 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_delete(VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_delete(VARCHAR) TO APPLICATION ROLE app_user';
 
+    -- Create wrapper procedure for weighted shortest path (algo.SPpaths).
+    -- Returns the single cheapest path between two nodes, minimizing the sum
+    -- of weight_prop along the path instead of just counting hops. The search
+    -- is unbounded in depth and pathCount is fixed at 1: this is the only
+    -- combination where algo.SPpaths uses its fast Dijkstra strategy
+    -- (requires FalkorDB >= 4.20); maxLen or pathCount > 1 fall back to a
+    -- slow enumeration that can stall the service on dense graphs.
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.shortest_path(graph_name VARCHAR, node_label VARCHAR, node_prop VARCHAR, source_value VARCHAR, target_value VARCHAR, rel_type VARCHAR, weight_prop VARCHAR)
+        RETURNS STRING
+        LANGUAGE SQL
+        AS
+        ''DECLARE
+            cypher STRING;
+        BEGIN
+            cypher := ''''MATCH (src:'''' || :node_label || '''' {'''' || :node_prop || '''': "'''' || :source_value || ''''"}), (dst:'''' || :node_label || '''' {'''' || :node_prop || '''': "'''' || :target_value || ''''"}) '''' ||
+                      ''''CALL algo.SPpaths({sourceNode: src, targetNode: dst, relTypes: ["'''' || :rel_type || ''''"], weightProp: "'''' || :weight_prop || ''''", pathCount: 1}) '''' ||
+                      ''''YIELD path, pathWeight '''' ||
+                      ''''RETURN pathWeight, [n IN nodes(path) | n.'''' || :node_prop || ''''] AS route'''';
+            RETURN app_public.graph_query_raw({''''graph_name'''': :graph_name, ''''query'''': :cypher});
+        END''';
+
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.shortest_path(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.shortest_path(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+
     -- Cortex Agent tool functions. Cortex Agents call these as generic tools
     -- from Snowflake; the functions delegate to the app-owned SPCS service.
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.get_context(input_agent_name VARCHAR)
