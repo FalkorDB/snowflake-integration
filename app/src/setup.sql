@@ -663,6 +663,7 @@ var spec = `spec:
       env:
         AUTH_TRUST_HOST: "true"
         TRUST_PROXY_HEADERS: "true"
+        FALKORDB_ARGS: "MAX_QUEUED_QUERIES 25 TIMEOUT_DEFAULT 60000 TIMEOUT_MAX 120000 RESULTSET_SIZE 10000"
       volumeMounts:
         - name: shared-staging
           mountPath: /var/lib/FalkorDB/import
