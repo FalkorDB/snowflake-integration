@@ -118,7 +118,7 @@ GRANT USAGE ON PROCEDURE app_public.copy_bound_table_to_stage(VARCHAR) TO APPLIC
 
 -- Store FalkorDB engine version (updated each release via docker_push.sh)
 CREATE TABLE IF NOT EXISTS app_public.app_metadata (key STRING, value STRING);
-MERGE INTO app_public.app_metadata t USING (SELECT 'falkordb_version' AS key, 'text-to-cypher:v0.1.20' AS value) s
+MERGE INTO app_public.app_metadata t USING (SELECT 'falkordb_version' AS key, 'text-to-cypher:v0.2.6' AS value) s
   ON t.key = s.key WHEN MATCHED THEN UPDATE SET value = s.value WHEN NOT MATCHED THEN INSERT VALUES (s.key, s.value);
 GRANT SELECT ON TABLE app_public.app_metadata TO APPLICATION ROLE app_admin;
 GRANT SELECT ON TABLE app_public.app_metadata TO APPLICATION ROLE app_user;
