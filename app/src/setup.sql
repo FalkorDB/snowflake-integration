@@ -424,6 +424,27 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.shortest_path(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.shortest_path(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
 
+    -- Create wrapper procedure for PageRank (algo.pageRank). Scores every
+    -- node by importance: a node ranks high when many other important nodes
+    -- point to it. Returns the top limit_count nodes with their scores,
+    -- highest first, showing node_prop for each node.
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.page_rank(graph_name VARCHAR, node_label VARCHAR, rel_type VARCHAR, node_prop VARCHAR, limit_count INTEGER)
+        RETURNS STRING
+        LANGUAGE SQL
+        AS
+        ''DECLARE
+            cypher STRING;
+        BEGIN
+            cypher := ''''CALL algo.pageRank("'''' || :node_label || ''''", "'''' || :rel_type || ''''") '''' ||
+                      ''''YIELD node, score '''' ||
+                      ''''RETURN node.'''' || :node_prop || '''' AS node, score '''' ||
+                      ''''ORDER BY score DESC LIMIT '''' || :limit_count;
+            RETURN app_public.graph_query_raw({''''graph_name'''': :graph_name, ''''query'''': :cypher});
+        END''';
+
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.page_rank(VARCHAR, VARCHAR, VARCHAR, VARCHAR, INTEGER) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.page_rank(VARCHAR, VARCHAR, VARCHAR, VARCHAR, INTEGER) TO APPLICATION ROLE app_user';
+
     -- Cortex Agent tool functions. Cortex Agents call these as generic tools
     -- from Snowflake; the functions delegate to the app-owned SPCS service.
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.get_context(input_agent_name VARCHAR)
