@@ -4,8 +4,8 @@ manifest_version: 1
 version:
   name: V2
   label: "Version Two"
-  comment: "Add FalkorDB Cortex Agent integration"
-  patch: 42
+  comment: "Set FalkorDB query timeouts (TIMEOUT_DEFAULT 60s, TIMEOUT_MAX 120s) so large loads succeed and runaway queries are capped"
+  patch: 48
 
 
 #artifacts that are distributed from this version of the package

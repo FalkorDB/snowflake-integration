@@ -206,6 +206,68 @@ The application needs permission to create the output table:
 GRANT CREATE TABLE ON SCHEMA EXAMPLE_DB.RESULT_SCHEMA TO APPLICATION <app_instance_name>;
 ```
 
+### Weighted Shortest Path
+
+`shortest_path()` wraps FalkorDB's [`algo.SPpaths`](https://docs.falkordb.com/algorithms/sppath.html). Instead of enumerating every path up to N hops, it minimizes the sum of a numeric relationship property (distance, time, price) and returns the single best route:
+
+```sql
+CALL <app_instance_name>.app_public.shortest_path(
+  'airroutes',      -- graph name
+  'Airport',        -- node label
+  'iata_code',      -- node property to match and display
+  'SYD',            -- source value
+  'JFK',            -- target value
+  'ROUTE',          -- relationship type
+  'distance_km'     -- numeric relationship property to minimize
+);
+```
+
+Each result row contains `pathWeight` (total of the minimized property) and `route` (the node property values along the path). The search depth is unbounded: `algo.SPpaths` uses its fast Dijkstra strategy, so even paths needing many hops return in milliseconds.
+
+For advanced options (`costProp`, `maxCost`, `maxLen`, `pathCount`, `relDirection`), call `algo.SPpaths` directly through `graph_query()`. Note that adding a `maxLen` bound or requesting more than one path (`pathCount` > 1) disables the Dijkstra strategy and forces a much slower bounded search; on dense graphs that can stall the service.
+
+The weight can be any numeric relationship property. If your data does not have one yet, derive it with `graph_query()`. For example, compute real route distances from node coordinates (`distance()` returns meters between two `point()` values):
+
+```sql
+CALL <app_instance_name>.app_public.graph_query('airroutes',
+  'MATCH (src:Airport)-[r:ROUTE]->(dst:Airport)
+   SET r.distance_km = round(distance(
+         point({latitude: src.latitude, longitude: src.longitude}),
+         point({latitude: dst.latitude, longitude: dst.longitude})) / 1000)'
+);
+```
+
+For advanced options (`costProp`, `maxCost`, `relDirection`), call `algo.SPpaths` directly through `graph_query()`.
+
+### Node Importance (PageRank)
+
+FalkorDB's [`algo.pageRank`](https://docs.falkordb.com/algorithms/pagerank.html) scores every node by importance: a node ranks high when many other important nodes point to it. The built-in `page_rank()` procedure returns the top nodes, highest first:
+
+```sql
+CALL <app_instance_name>.app_public.page_rank(
+  'airroutes',   -- graph name
+  'Airport',     -- node label
+  'ROUTE',       -- relationship type
+  'iata_code',   -- node property to display
+  10             -- how many top nodes to return
+);
+```
+
+Scores are relative and sum to 1.0 across the graph, so use them for ranking, not as absolute values.
+
+**A real use case:** "A storm is about to close one airport in Europe. Which closure would disrupt global traffic the most?" PageRank answers it instantly: an airport's rank measures how much traffic naturally concentrates there, so rank = impact. It can beat a simple route count, an airport with fewer routes can rank higher because the airports feeding it are themselves major hubs. The same question applies to any domain: which customer, product, server, or account matters most if it fails or gets targeted.
+
+The equivalent raw Cypher, if you need variations, runs through `graph_query()`:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query('airroutes',
+  'CALL algo.pageRank("Airport", "ROUTE")
+   YIELD node, score
+   RETURN node.iata_code AS airport, score
+   ORDER BY score DESC
+   LIMIT 10');
+```
+
 ### Managing Graphs
 
 ```sql

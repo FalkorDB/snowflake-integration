@@ -118,7 +118,7 @@ GRANT USAGE ON PROCEDURE app_public.copy_bound_table_to_stage(VARCHAR) TO APPLIC
 
 -- Store FalkorDB engine version (updated each release via docker_push.sh)
 CREATE TABLE IF NOT EXISTS app_public.app_metadata (key STRING, value STRING);
-MERGE INTO app_public.app_metadata t USING (SELECT 'falkordb_version' AS key, 'text-to-cypher:v0.1.20' AS value) s
+MERGE INTO app_public.app_metadata t USING (SELECT 'falkordb_version' AS key, 'text-to-cypher:v0.2.6' AS value) s
   ON t.key = s.key WHEN MATCHED THEN UPDATE SET value = s.value WHEN NOT MATCHED THEN INSERT VALUES (s.key, s.value);
 GRANT SELECT ON TABLE app_public.app_metadata TO APPLICATION ROLE app_admin;
 GRANT SELECT ON TABLE app_public.app_metadata TO APPLICATION ROLE app_user;
@@ -135,7 +135,7 @@ GRANT USAGE ON SCHEMA v1 TO APPLICATION ROLE app_admin;
 CREATE OR REPLACE PROCEDURE app_public.request_table_access(table_name VARCHAR)
     RETURNS VARIANT
     LANGUAGE PYTHON
-    RUNTIME_VERSION = '3.8'
+    RUNTIME_VERSION = '3.10'
     PACKAGES = ('snowflake-snowpark-python')
     HANDLER = 'request_access'
     EXECUTE AS OWNER
@@ -400,6 +400,51 @@ BEGIN
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_delete(VARCHAR) TO APPLICATION ROLE app_admin';
     EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.graph_delete(VARCHAR) TO APPLICATION ROLE app_user';
 
+    -- Create wrapper procedure for weighted shortest path (algo.SPpaths).
+    -- Returns the single cheapest path between two nodes, minimizing the sum
+    -- of weight_prop along the path instead of just counting hops. The search
+    -- is unbounded in depth and pathCount is fixed at 1: this is the only
+    -- combination where algo.SPpaths uses its fast Dijkstra strategy
+    -- (requires FalkorDB >= 4.20); maxLen or pathCount > 1 fall back to a
+    -- slow enumeration that can stall the service on dense graphs.
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.shortest_path(graph_name VARCHAR, node_label VARCHAR, node_prop VARCHAR, source_value VARCHAR, target_value VARCHAR, rel_type VARCHAR, weight_prop VARCHAR)
+        RETURNS STRING
+        LANGUAGE SQL
+        AS
+        ''DECLARE
+            cypher STRING;
+        BEGIN
+            cypher := ''''MATCH (src:'''' || :node_label || '''' {'''' || :node_prop || '''': "'''' || :source_value || ''''"}), (dst:'''' || :node_label || '''' {'''' || :node_prop || '''': "'''' || :target_value || ''''"}) '''' ||
+                      ''''CALL algo.SPpaths({sourceNode: src, targetNode: dst, relTypes: ["'''' || :rel_type || ''''"], weightProp: "'''' || :weight_prop || ''''", pathCount: 1}) '''' ||
+                      ''''YIELD path, pathWeight '''' ||
+                      ''''RETURN pathWeight, [n IN nodes(path) | n.'''' || :node_prop || ''''] AS route'''';
+            RETURN app_public.graph_query_raw({''''graph_name'''': :graph_name, ''''query'''': :cypher});
+        END''';
+
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.shortest_path(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.shortest_path(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user';
+
+    -- Create wrapper procedure for PageRank (algo.pageRank). Scores every
+    -- node by importance: a node ranks high when many other important nodes
+    -- point to it. Returns the top limit_count nodes with their scores,
+    -- highest first, showing node_prop for each node.
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE PROCEDURE app_public.page_rank(graph_name VARCHAR, node_label VARCHAR, rel_type VARCHAR, node_prop VARCHAR, limit_count INTEGER)
+        RETURNS STRING
+        LANGUAGE SQL
+        AS
+        ''DECLARE
+            cypher STRING;
+        BEGIN
+            cypher := ''''CALL algo.pageRank("'''' || :node_label || ''''", "'''' || :rel_type || ''''") '''' ||
+                      ''''YIELD node, score '''' ||
+                      ''''RETURN node.'''' || :node_prop || '''' AS node, score '''' ||
+                      ''''ORDER BY score DESC LIMIT '''' || :limit_count;
+            RETURN app_public.graph_query_raw({''''graph_name'''': :graph_name, ''''query'''': :cypher});
+        END''';
+
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.page_rank(VARCHAR, VARCHAR, VARCHAR, VARCHAR, INTEGER) TO APPLICATION ROLE app_admin';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON PROCEDURE app_public.page_rank(VARCHAR, VARCHAR, VARCHAR, VARCHAR, INTEGER) TO APPLICATION ROLE app_user';
+
     -- Cortex Agent tool functions. Cortex Agents call these as generic tools
     -- from Snowflake; the functions delegate to the app-owned SPCS service.
     EXECUTE IMMEDIATE 'CREATE OR REPLACE FUNCTION agent_tools.get_context(input_agent_name VARCHAR)
@@ -663,6 +708,7 @@ var spec = `spec:
       env:
         AUTH_TRUST_HOST: "true"
         TRUST_PROXY_HEADERS: "true"
+        FALKORDB_ARGS: "MAX_QUEUED_QUERIES 25 TIMEOUT_DEFAULT 60000 TIMEOUT_MAX 120000 RESULTSET_SIZE 10000"
       volumeMounts:
         - name: shared-staging
           mountPath: /var/lib/FalkorDB/import

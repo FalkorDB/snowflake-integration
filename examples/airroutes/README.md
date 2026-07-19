@@ -88,5 +88,86 @@ CALL <app_instance_name>.app_public.graph_query('airroutes',
    LIMIT 20');
 ```
 
+## 7. Weighted shortest path
+
+Enumerating all paths up to N hops tells you what is reachable, not what is best. To find the route that actually matters, put a weight on each edge and let the graph minimize it.
+
+The airports already carry coordinates, so compute the real distance of every route once (FalkorDB's `distance()` returns meters between two `point()` values):
+
+```sql
+CALL <app_instance_name>.app_public.graph_query('airroutes',
+  'MATCH (src:Airport)-[r:ROUTE]->(dst:Airport)
+   SET r.distance_km = round(distance(
+         point({latitude: src.latitude, longitude: src.longitude}),
+         point({latitude: dst.latitude, longitude: dst.longitude})) / 1000)');
+```
+
+Then ask for the shortest route by distance with the built-in `shortest_path()` procedure (a wrapper around FalkorDB's [`algo.SPpaths`](https://docs.falkordb.com/algorithms/sppath.html)):
+
+```sql
+CALL <app_instance_name>.app_public.shortest_path(
+  'airroutes',      -- graph name
+  'Airport',        -- node label
+  'iata_code',      -- node property to match and display
+  'SYD',            -- source value
+  'JFK',            -- target value
+  'ROUTE',          -- relationship type
+  'distance_km'     -- numeric relationship property to minimize
+);
+```
+
+The same thing is available through raw Cypher if you need the advanced options:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query('airroutes',
+  'MATCH (syd:Airport {iata_code:"SYD"}), (jfk:Airport {iata_code:"JFK"})
+   CALL algo.SPpaths({
+     sourceNode: syd,
+     targetNode: jfk,
+     relTypes: ["ROUTE"],
+     weightProp: "distance_km",
+     pathCount: 1
+   })
+   YIELD path, pathWeight
+   RETURN pathWeight AS total_km,
+          [airport IN nodes(path) | airport.iata_code] AS route');
+```
+
+Instead of 20 arbitrary 5-hop itineraries, this returns the single best route ranked by total kilometers flown. The search depth is unbounded: without a `maxLen` restriction `algo.SPpaths` uses its fast Dijkstra strategy, so even remote routes needing many hops return in milliseconds. Useful variations:
+
+- `weightProp: "stops"` minimizes layovers instead of distance
+- `costProp` + `maxCost` minimizes one property while bounding another (for example, shortest distance with at most 2 stops)
+
+Keep `pathCount: 1` and avoid `maxLen`: either of those switches the engine to a slow bounded search that can stall on dense graphs.
+
+## 8. Rank the biggest hubs (PageRank)
+
+Which airports matter most in the network? PageRank scores each airport by how much traffic naturally concentrates there: an airport ranks high when many well-connected airports route into it. Unlike shortest path, it needs no weights and no source/target, it looks at the whole network at once. Use the built-in `page_rank()` procedure:
+
+```sql
+CALL <app_instance_name>.app_public.page_rank(
+  'airroutes',   -- graph name
+  'Airport',     -- node label
+  'ROUTE',       -- relationship type
+  'iata_code',   -- node property to display
+  10             -- how many top nodes to return
+);
+```
+
+Returns the top 10 hub airports with their PageRank scores, highest first. Scores are relative (they sum to 1.0 across the graph), so read them as a ranking.
+
+A real question this answers: "a storm is about to close one airport, which closure disrupts global traffic the most?" The rank measures impact, and it can beat a simple route count: ATL and ORD rank above FRA and CDG even though the latter have more routes, because the airports feeding them are themselves major hubs.
+
+The same is available as raw Cypher through `graph_query()` if you need variations:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query('airroutes',
+  'CALL algo.pageRank("Airport", "ROUTE")
+   YIELD node, score
+   RETURN node.iata_code AS airport, score
+   ORDER BY score DESC
+   LIMIT 10');
+```
+
 For the full walkthrough (including the SQL comparison and Cortex Agent setup), see the
 [Snowflake integration guide](https://docs.falkordb.com/integration/snowflake.html).
