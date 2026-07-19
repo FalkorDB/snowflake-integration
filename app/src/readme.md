@@ -356,24 +356,6 @@ CALL <app_instance_name>.app_public.page_rank(
 );
 ```
 
-**`shortest_path(graph_name VARCHAR, node_label VARCHAR, node_prop VARCHAR, source_value VARCHAR, target_value VARCHAR, rel_type VARCHAR, weight_prop VARCHAR)`**
-- Finds the weighted shortest path between two nodes using FalkorDB's `algo.SPpaths` (Dijkstra)
-- Minimizes the sum of a numeric relationship property (distance, time, price) along the path
-- Returns `pathWeight` (total of the minimized property) and `route` (node property values along the path)
-- Example:
-
-```sql
-CALL <app_instance_name>.app_public.shortest_path(
-    'airroutes',      -- graph name
-    'Airport',        -- node label
-    'iata_code',      -- node property to match and display
-    'SYD',            -- source value
-    'JFK',            -- target value
-    'ROUTE',          -- relationship type
-    'distance_km'     -- numeric relationship property to minimize
-);
-```
-
 ### Cortex Agent Integration
 
 The agent is created after the normal FalkorDB setup flow. It does not start the service by itself. It can load data only from an already-bound `consumer_data_table` reference after the user confirms the generated LOAD CSV mapping.
