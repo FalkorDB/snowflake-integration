@@ -135,7 +135,7 @@ GRANT USAGE ON SCHEMA v1 TO APPLICATION ROLE app_admin;
 CREATE OR REPLACE PROCEDURE app_public.request_table_access(table_name VARCHAR)
     RETURNS VARIANT
     LANGUAGE PYTHON
-    RUNTIME_VERSION = '3.8'
+    RUNTIME_VERSION = '3.10'
     PACKAGES = ('snowflake-snowpark-python')
     HANDLER = 'request_access'
     EXECUTE AS OWNER
