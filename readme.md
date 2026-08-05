@@ -30,6 +30,30 @@ Create an app instance and configure staging connections:
 ./scripts/instansiate_app.sh
 ```
 
+## How to Run the Demo (day to day)
+
+After the one-time setup above, use the demo lifecycle scripts. They exist because
+the compute pool bills per node-hour for as long as it is active, and **nothing
+suspends it automatically** — the FalkorDB service is a long-running container, so
+the pool is never idle and `AUTO_SUSPEND_SECS` never fires.
+
+```bash
+./scripts/demo_start.sh    # resume/create compute, start the service, load demo data, print the browser URL
+./scripts/demo_status.sh   # show what is running and whether anything is billing
+./scripts/demo_stop.sh     # suspend the service and the compute pool so nothing bills
+```
+
+`demo_start.sh` reloads the sample graph on every run because graph data is not
+persisted (the service mounts a stage for CSV staging only). Pass `--no-data` to
+skip it.
+
+Defaults can be overridden with environment variables:
+`FALKORDB_APP_NAME`, `FALKORDB_ROLE`, `FALKORDB_POOL`, `FALKORDB_WAREHOUSE`,
+`FALKORDB_SNOW_CONNECTION`.
+
+Use `demo_stop.sh` between demos and the teardown scripts below only when you want
+to remove the environment entirely.
+
 ## How to Use the Demo
 
 Once the demo is running, you can call the FalkorDB app procedure:

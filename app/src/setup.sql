@@ -6,6 +6,16 @@ CREATE SCHEMA IF NOT EXISTS app_public;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_user;
 
+-- Records the compute resources start_app() was given, so stop_app()/suspend_app()
+-- can release them later. Without this the app creates a compute pool it can never
+-- suspend, and the pool keeps billing per node-hour after the app is stopped.
+CREATE TABLE IF NOT EXISTS app_public.app_config (
+    config_key STRING PRIMARY KEY,
+    config_value STRING,
+    updated_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+);
+GRANT SELECT ON TABLE app_public.app_config TO APPLICATION ROLE app_admin;
+
 -- Cortex Agent schemas. These mirror the Snowflake-native agent surface used by
 -- graph analytics apps: GRAPH is the public API, AGENT_TOOLS contains callable
 -- tools, and AGENT_ARTEFACTS stores per-agent configuration.
@@ -157,18 +167,72 @@ GRANT USAGE ON PROCEDURE app_public.request_table_access(VARCHAR) TO APPLICATION
 GRANT USAGE ON PROCEDURE app_public.request_table_access(VARCHAR) TO APPLICATION ROLE app_user;
 
 
+-- Internal helper: suspend or resume a compute pool.
+-- Returns an empty string on success, or a warning when the app cannot control the
+-- pool - for example when the consumer created it (scripts/instantiate.sql) and only
+-- granted the app USAGE on it.
+CREATE OR REPLACE PROCEDURE app_public.set_compute_pool_state(poolname VARCHAR, new_state VARCHAR)
+    RETURNS STRING
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    action STRING DEFAULT UPPER(new_state);
+    invalid_pool_name EXCEPTION (-20020, 'Invalid compute pool name.');
+    invalid_state EXCEPTION (-20021, 'Compute pool state must be SUSPEND or RESUME.');
+BEGIN
+    IF (poolname IS NULL OR NOT REGEXP_LIKE(UPPER(poolname), '^[A-Z_][A-Z0-9_$]*$')) THEN
+        RAISE invalid_pool_name;
+    END IF;
+    IF (action <> 'SUSPEND' AND action <> 'RESUME') THEN
+        RAISE invalid_state;
+    END IF;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || poolname || ' ' || action;
+        RETURN '';
+    EXCEPTION
+        WHEN OTHER THEN
+            -- Already in the requested state, or the app does not own the pool.
+            RETURN 'Compute pool ' || poolname || ' could not be '
+                || IFF(action = 'SUSPEND', 'suspended', 'resumed') || ' (' || SQLERRM || ').';
+    END;
+END
+$$;
+
 CREATE OR REPLACE PROCEDURE app_public.start_app(poolname VARCHAR, whname VARCHAR)
     RETURNS string
     LANGUAGE sql
     AS $$
 BEGIN
-        -- Create compute pool if it doesn't exist
+        -- Create compute pool if it doesn't exist.
+        -- AUTO_SUSPEND_SECS is a backstop only: it fires when the pool is idle
+        -- (no running services or jobs). While st_spcs is up the pool is never idle,
+        -- so stopping the demo still requires stop_app() or suspend_app().
         EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) 
             MIN_NODES = 1 
             MAX_NODES = 1
             INSTANCE_FAMILY = CPU_X64_S
-            AUTO_RESUME = TRUE'
+            AUTO_RESUME = TRUE
+            AUTO_SUSPEND_SECS = 300'
             USING (poolname);
+
+        -- Remember which pool/warehouse this app was started with, so stop_app()
+        -- and suspend_app() can release them.
+        MERGE INTO app_public.app_config AS t
+        USING (
+            SELECT 'compute_pool' AS config_key, :poolname AS config_value
+            UNION ALL
+            SELECT 'warehouse' AS config_key, :whname AS config_value
+        ) AS s
+        ON t.config_key = s.config_key
+        WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_on = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);
+
+        -- The pool may be suspended from a previous suspend_app()/stop_app().
+        -- AUTO_RESUME does not cover an explicitly suspended pool, so resume it.
+        CALL app_public.set_compute_pool_state(:poolname, 'RESUME');
         
         -- Create warehouse if it doesn't exist
         EXECUTE IMMEDIATE 'CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER(?)
@@ -184,6 +248,16 @@ BEGIN
             FROM SPECIFICATION_FILE = ''falkordb.yaml''
             QUERY_WAREHOUSE = IDENTIFIER(?)'
             USING (poolname, whname);
+
+    -- If the service already existed but was suspended by suspend_app(), the
+    -- CREATE above is a no-op and the service stays suspended. Resume it.
+    BEGIN
+        ALTER SERVICE app_public.st_spcs RESUME;
+    EXCEPTION
+        WHEN OTHER THEN
+            NULL; -- already running
+    END;
+
     GRANT USAGE ON SERVICE app_public.st_spcs TO APPLICATION ROLE app_user;
     GRANT SERVICE ROLE app_public.st_spcs!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
     -- Also grant to app_admin for operational tasks
@@ -737,7 +811,13 @@ var spec = `spec:
 `;
 
 snowflake.execute({
-    sqlText: "CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_S AUTO_RESUME = TRUE",
+    sqlText: "CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_S AUTO_RESUME = TRUE AUTO_SUSPEND_SECS = 300",
+    binds: [POOLNAME]
+});
+
+// The pool may be suspended from a previous suspend_app()/stop_app().
+snowflake.execute({
+    sqlText: "CALL app_public.set_compute_pool_state(?, 'RESUME')",
     binds: [POOLNAME]
 });
 
@@ -1193,16 +1273,171 @@ END
 $$;
 GRANT USAGE ON PROCEDURE graph.drop_agent(VARCHAR) TO APPLICATION ROLE app_admin;
 
+-- Same as stop_app(), with an explicit pool name for apps that were started before
+-- the pool name was recorded, or when the pool is not the one start_app() used.
+CREATE OR REPLACE PROCEDURE app_public.stop_app(poolname VARCHAR)
+    RETURNS string
+    LANGUAGE sql
+    EXECUTE AS OWNER
+    AS
+$$
+DECLARE
+    pool_msg STRING;
+BEGIN
+    DROP SERVICE IF EXISTS app_public.st_spcs;
+
+    CALL app_public.set_compute_pool_state(:poolname, 'SUSPEND') INTO :pool_msg;
+
+    IF (pool_msg IS NULL OR pool_msg = '') THEN
+        RETURN 'Service dropped and compute pool ' || poolname || ' suspended. No compute is billing.';
+    END IF;
+
+    RETURN 'Service dropped, but the compute pool was not suspended. ' || pool_msg
+        || ' If the pool was created by the consumer rather than by the app, suspend it yourself, '
+        || 'otherwise it keeps billing: ALTER COMPUTE POOL ' || poolname || ' SUSPEND;';
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.stop_app(VARCHAR) TO APPLICATION ROLE app_admin;
+
+-- Stop the app and release the compute it is billing for.
+--
+-- Dropping the service is not enough: the compute pool created by start_app()
+-- keeps billing per node-hour while it is active, and AUTO_SUSPEND_SECS only fires
+-- once the pool is idle, so the pool must be suspended explicitly.
 CREATE OR REPLACE PROCEDURE app_public.stop_app()
     RETURNS string
     LANGUAGE sql
+    EXECUTE AS OWNER
     AS
 $$
+DECLARE
+    pool_name STRING;
+    result_msg STRING;
 BEGIN
-    DROP SERVICE IF EXISTS app_public.st_spcs;
+    pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
+
+    IF (pool_name IS NULL) THEN
+        DROP SERVICE IF EXISTS app_public.st_spcs;
+        RETURN 'Service dropped. No compute pool is recorded for this app (it was started before this version), '
+            || 'so no pool was suspended and it may still be billing. '
+            || 'Call app_public.stop_app(''<POOL_NAME>'') instead, or suspend it yourself: ALTER COMPUTE POOL <POOL_NAME> SUSPEND;';
+    END IF;
+
+    CALL app_public.stop_app(:pool_name) INTO :result_msg;
+    RETURN result_msg;
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.stop_app() TO APPLICATION ROLE app_admin;
+
+-- Cheap stop for repeat demos: suspends the service and the compute pool but keeps
+-- the service definition, so resume_app() restarts in seconds instead of requiring a
+-- full start_app(). Billing stops the same way it does with stop_app().
+CREATE OR REPLACE PROCEDURE app_public.suspend_app()
+    RETURNS string
+    LANGUAGE sql
+    EXECUTE AS OWNER
+    AS
+$$
+DECLARE
+    pool_name STRING;
+    pool_msg STRING;
+BEGIN
+    BEGIN
+        ALTER SERVICE IF EXISTS app_public.st_spcs SUSPEND;
+    EXCEPTION
+        WHEN OTHER THEN
+            NULL; -- no service, or it is already suspended
+    END;
+
+    pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
+
+    IF (pool_name IS NULL) THEN
+        RETURN 'Service suspended. No compute pool is recorded for this app, so no pool was suspended '
+            || 'and it may still be billing: ALTER COMPUTE POOL <POOL_NAME> SUSPEND;';
+    END IF;
+
+    CALL app_public.set_compute_pool_state(:pool_name, 'SUSPEND') INTO :pool_msg;
+
+    IF (pool_msg IS NULL OR pool_msg = '') THEN
+        RETURN 'Service and compute pool ' || pool_name || ' suspended. No compute is billing. '
+            || 'Call app_public.resume_app() to restart.';
+    END IF;
+
+    RETURN 'Service suspended, but the compute pool was not. ' || pool_msg
+        || ' Suspend it yourself or it keeps billing: ALTER COMPUTE POOL ' || pool_name || ' SUSPEND;';
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.suspend_app() TO APPLICATION ROLE app_admin;
+
+-- Restart after suspend_app(). AUTO_RESUME does not cover an explicitly suspended
+-- pool or service, so both are resumed here.
+CREATE OR REPLACE PROCEDURE app_public.resume_app()
+    RETURNS string
+    LANGUAGE sql
+    EXECUTE AS OWNER
+    AS
+$$
+DECLARE
+    pool_name STRING;
+    pool_msg STRING DEFAULT '';
+BEGIN
+    pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
+
+    IF (pool_name IS NOT NULL) THEN
+        CALL app_public.set_compute_pool_state(:pool_name, 'RESUME') INTO :pool_msg;
+    END IF;
+
+    BEGIN
+        ALTER SERVICE app_public.st_spcs RESUME;
+    EXCEPTION
+        WHEN OTHER THEN
+            RETURN 'Could not resume the service (' || SQLERRM || '). '
+                || 'If it was dropped by stop_app(), call start_app(<POOL>, <WAREHOUSE>) instead.';
+    END;
+
+    RETURN 'Compute pool and service resuming. Poll app_public.get_service_status() until READY. '
+        || 'Graph data is not persisted across a stop, so reload your data once the service is ready.';
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.resume_app() TO APPLICATION ROLE app_admin;
+
+-- Whether anything is still billing: the recorded compute resources and the pool state.
+CREATE OR REPLACE PROCEDURE app_public.get_compute_status()
+    RETURNS VARIANT
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    pool_name STRING;
+    wh_name STRING;
+    pool_state VARIANT DEFAULT NULL;
+BEGIN
+    pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
+    wh_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'warehouse');
+
+    IF (pool_name IS NOT NULL AND REGEXP_LIKE(UPPER(pool_name), '^[A-Z_][A-Z0-9_$]*$')) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW COMPUTE POOLS LIKE ''' || pool_name || '''';
+            pool_state := (
+                SELECT ARRAY_AGG(OBJECT_CONSTRUCT('name', "name", 'state', "state", 'num_services', "num_services"))
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            );
+        EXCEPTION
+            WHEN OTHER THEN
+                pool_state := NULL; -- the app cannot see a consumer-owned pool
+        END;
+    END IF;
+
+    RETURN OBJECT_CONSTRUCT_KEEP_NULL(
+        'compute_pool', pool_name,
+        'warehouse', wh_name,
+        'compute_pool_state', pool_state
+    );
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.get_compute_status() TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.get_compute_status() TO APPLICATION ROLE app_user;
 
 -- Helpers to fetch service status and logs without requiring external application role switching
 CREATE OR REPLACE PROCEDURE app_public.get_service_status()

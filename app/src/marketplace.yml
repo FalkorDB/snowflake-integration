@@ -74,7 +74,7 @@ setup:
 # Cost information
 cost_info:
   compute_pool:
-    description: "Exclusive compute pool runs continuously when AUTO_RESUME is TRUE"
+    description: "Exclusive compute pool bills per node-hour while active. FalkorDB is a long-running service, so the pool never goes idle on its own - call suspend_app() or stop_app() when you are done to stop the charge"
     typical_cost: "~$2-4 per hour for CPU_X64_S instance"
     
   warehouse:

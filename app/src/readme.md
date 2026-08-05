@@ -142,6 +142,37 @@ CALL <app_instance_name>.app_public.start_app(
 );
 ```
 
+### Stop paying when you are not using the app
+
+The compute pool bills per node-hour for as long as it is active. FalkorDB runs as a
+long-running service, so the pool never becomes idle and `AUTO_SUSPEND_SECS` never
+fires — the pool has to be suspended explicitly.
+
+```sql
+-- Pause: suspends the service and the compute pool, keeps the service definition
+-- so restarting takes seconds
+CALL <app_instance_name>.app_public.suspend_app();
+
+-- Resume, then poll until READY
+CALL <app_instance_name>.app_public.resume_app();
+CALL <app_instance_name>.app_public.get_service_status();
+
+-- Check whether anything is still billing
+CALL <app_instance_name>.app_public.get_compute_status();
+```
+
+`stop_app()` also suspends the compute pool, and additionally drops the service.
+
+If the compute pool was created by you rather than by `start_app()`, the app cannot
+suspend it — the procedures will say so, and you suspend it yourself:
+
+```sql
+ALTER COMPUTE POOL FALKORDB_POOL SUSPEND;
+```
+
+Graphs are not persisted across a stop or suspend (the service mounts a stage for CSV
+staging only), so reload your data after resuming.
+
 **Advanced**: If you need a larger Snowflake compute pool or warehouse, create them manually **before** calling `start_app()`:
 
 ```sql
@@ -504,6 +535,28 @@ $falkordb-snowflake-native-app-skill
 
 **`get_service_containers()`**
 - Lists all running FalkorDB service containers
+
+**`suspend_app()`**
+- Suspends the FalkorDB service **and** the compute pool recorded by `start_app()`, so nothing bills
+- Keeps the service definition, so `resume_app()` restarts in seconds
+- Reports a warning if the compute pool is consumer-owned and cannot be suspended by the app
+- Example: `CALL app_public.suspend_app();`
+
+**`resume_app()`**
+- Resumes the compute pool and the service after `suspend_app()`
+- Needed because `AUTO_RESUME` does not cover an explicitly suspended pool or service
+- Poll `get_service_status()` until `READY`; reload graph data, which is not persisted
+- Example: `CALL app_public.resume_app();`
+
+**`stop_app()`** / **`stop_app(poolname VARCHAR)`**
+- Drops the FalkorDB service and suspends the compute pool recorded by `start_app()`
+- Pass `poolname` explicitly for apps started before the pool name was recorded
+- Example: `CALL app_public.stop_app();`
+
+**`get_compute_status()`**
+- Returns the compute pool and warehouse the app was started with, plus the pool state
+- Use it to confirm nothing is left billing
+- Example: `CALL app_public.get_compute_status();`
 
 ---
 

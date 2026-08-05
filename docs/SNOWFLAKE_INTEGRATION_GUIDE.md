@@ -470,7 +470,26 @@ FalkorDB runs on Snowflake Compute Pools, which charge based on usage:
 - **ACTIVE** pools charge continuously (even when idle)
 - **SUSPENDED** pools don't charge
 
+`AUTO_SUSPEND_SECS` on a compute pool only fires once the pool is idle, meaning no
+running services or jobs. FalkorDB is a long-running service, not a job, so while the
+app is up the pool is never idle and nothing suspends it automatically. Stopping the
+compute is always an explicit step.
+
 **Always suspend when not in use:**
+
+```sql
+-- From the app: suspends the service and the compute pool it created
+CALL <app_instance_name>.app_public.suspend_app();
+
+-- Restart, then poll until READY
+CALL <app_instance_name>.app_public.resume_app();
+CALL <app_instance_name>.app_public.get_service_status();
+
+-- Confirm nothing is left billing
+CALL <app_instance_name>.app_public.get_compute_status();
+```
+
+If you created the compute pool yourself, the app cannot suspend it — do it directly:
 
 ```sql
 -- Outside the app, using ACCOUNTADMIN
@@ -482,10 +501,14 @@ ALTER COMPUTE POOL falkordb_pool SUSPEND;
 ALTER COMPUTE POOL falkordb_pool RESUME;
 ```
 
+In this repo, `./scripts/demo_start.sh`, `./scripts/demo_stop.sh` and
+`./scripts/demo_status.sh` wrap the whole lifecycle, including reloading demo data
+(graph data is not persisted across a stop).
+
 ### Service Management
 
 ```sql
--- Stop the service (doesn't delete compute pool)
+-- Stop the service and suspend the compute pool
 CALL <app_instance_name>.app_public.stop_app();
 
 -- Restart the service
