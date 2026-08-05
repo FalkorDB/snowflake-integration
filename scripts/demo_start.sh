@@ -6,8 +6,11 @@
 # Safe to run repeatedly. It handles a cold start (nothing exists yet) and a warm
 # start (resuming what demo_stop.sh suspended) through the same idempotent path.
 #
-# Usage: ./scripts/demo_start.sh [--no-data]
-#   --no-data   Skip loading the sample graph.
+# Usage: ./scripts/demo_start.sh [--dataset social|airroutes|none]
+#   --dataset social      Load the small sample social network (default).
+#   --dataset airroutes   Load the full air routes dataset (examples/airroutes).
+#   --dataset none        Start the service only.
+#   --no-data             Same as --dataset none.
 #
 # Run ./scripts/demo_stop.sh when the demo is over: the compute pool bills per
 # node-hour for as long as it is active, and nothing suspends it automatically.
@@ -18,16 +21,27 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/demo_common.sh
 source "$SCRIPT_DIR/demo_common.sh"
 
-LOAD_DATA=true
+DATASET="${FALKORDB_DATASET:-social}"
 READY_TIMEOUT_SECS="${FALKORDB_READY_TIMEOUT_SECS:-900}"
 
-for arg in "$@"; do
-    case "$arg" in
-        --no-data) LOAD_DATA=false ;;
-        -h|--help) sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "❌ Unknown option: $arg"; exit 1 ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-data) DATASET="none" ;;
+        --dataset)
+            shift
+            DATASET="${1:-}"
+            ;;
+        --dataset=*) DATASET="${1#--dataset=}" ;;
+        -h|--help) sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "❌ Unknown option: $1"; exit 1 ;;
     esac
+    shift
 done
+
+case "$DATASET" in
+    social|airroutes|none) ;;
+    *) echo "❌ Unknown dataset: $DATASET (expected social, airroutes or none)"; exit 1 ;;
+esac
 
 echo "🚀 FalkorDB Demo Start"
 echo "======================"
@@ -85,12 +99,15 @@ echo ""
 # Graphs live only in the container: app/src/falkordb.yaml mounts a stage for CSV
 # staging but no volume for graph data, so every stop wipes the graphs and they
 # have to be reloaded on each start.
-if [ "$LOAD_DATA" = true ]; then
+if [ "$DATASET" = "social" ]; then
     echo "📊 Step 3: Loading sample graph (demo_social_network)..."
     run_sql "CALL ${APP_NAME}.app_public.load_sample_social_network();"
     echo "✅ Sample graph loaded"
+elif [ "$DATASET" = "airroutes" ]; then
+    echo "📊 Step 3: Loading the air routes dataset..."
+    "$SCRIPT_DIR/demo_load_airroutes.sh"
 else
-    echo "⏭️  Step 3: Skipping demo data (--no-data)"
+    echo "⏭️  Step 3: Skipping demo data (--dataset none)"
 fi
 echo ""
 

@@ -43,9 +43,25 @@ the pool is never idle and `AUTO_SUSPEND_SECS` never fires.
 ./scripts/demo_stop.sh     # suspend the service and the compute pool so nothing bills
 ```
 
-`demo_start.sh` reloads the sample graph on every run because graph data is not
-persisted (the service mounts a stage for CSV staging only). Pass `--no-data` to
-skip it.
+`demo_start.sh` loads the small sample social network by default. For the full air
+routes demo (`examples/airroutes`, ~48k airports and ~67k routes):
+
+```bash
+./scripts/demo_start.sh --dataset airroutes
+```
+
+That uploads both CSVs into Snowflake, creates the indexes, binds each table to the
+app in turn with `register_callback` + `SYSTEM$REFERENCE` (no Permissions UI needed),
+loads the graph and computes route distances. It can also be run on its own against
+an already-running service:
+
+```bash
+./scripts/demo_load_airroutes.sh                # full load
+./scripts/demo_load_airroutes.sh --skip-upload  # rebuild the graph, reuse the Snowflake tables
+```
+
+Data has to be reloaded on every start because graph data is not persisted (the
+service mounts a stage for CSV staging only). Use `--dataset none` to skip it.
 
 Defaults can be overridden with environment variables:
 `FALKORDB_APP_NAME`, `FALKORDB_ROLE`, `FALKORDB_POOL`, `FALKORDB_WAREHOUSE`,

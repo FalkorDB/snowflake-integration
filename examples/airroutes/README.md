@@ -2,6 +2,10 @@
 
 Load two CSVs into Snowflake, build a graph with the FalkorDB Native App, and answer a multi-hop question. This is the exact flow shown in the FalkorDB Snowflake webinar.
 
+> **Shortcut**: everything below is scripted in `scripts/demo_load_airroutes.sh`.
+> Run `./scripts/demo_start.sh --dataset airroutes` from the repo root to get the
+> whole demo in one command. Read on for the manual walkthrough.
+
 ## Files
 
 | File | Size | Contents |
@@ -46,6 +50,14 @@ CALL <app_instance_name>.app_public.graph_query('airroutes',
 ## 4. Load airports
 
 Bind `ROUTES_DEMO.PUBLIC.AIRPORTS` to the app's `consumer_data_table` reference, then:
+
+Binding can be done in the app's **Permissions** tab, or from SQL, which is what the
+script uses:
+
+```sql
+CALL <app_instance_name>.app_public.register_callback('consumer_data_table', 'ADD',
+  SYSTEM$REFERENCE('TABLE', 'ROUTES_DEMO.PUBLIC.AIRPORTS', 'PERSISTENT', 'SELECT'));
+```
 
 ```sql
 CALL <app_instance_name>.app_public.load_csv('airroutes',
