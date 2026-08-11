@@ -1329,6 +1329,117 @@ END
 $$;
 GRANT USAGE ON PROCEDURE app_public.stop_app() TO APPLICATION ROLE app_admin;
 
+-- Cheap stop for repeat demos: suspends the service and the compute pool but keeps
+-- the service definition, so resume_app() restarts in seconds instead of requiring a
+-- full start_app(). Billing stops the same way it does with stop_app().
+CREATE OR REPLACE PROCEDURE app_public.suspend_app()
+    RETURNS string
+    LANGUAGE sql
+    EXECUTE AS OWNER
+    AS
+$$
+DECLARE
+    pool_name STRING;
+    pool_msg STRING;
+BEGIN
+    BEGIN
+        ALTER SERVICE IF EXISTS app_public.st_spcs SUSPEND;
+    EXCEPTION
+        WHEN OTHER THEN
+            NULL; -- no service, or it is already suspended
+    END;
+
+    pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
+
+    IF (pool_name IS NULL) THEN
+        RETURN 'Service suspended. No compute pool is recorded for this app, so no pool was suspended '
+            || 'and it may still be billing: ALTER COMPUTE POOL <POOL_NAME> SUSPEND;';
+    END IF;
+
+    CALL app_public.set_compute_pool_state(:pool_name, 'SUSPEND') INTO :pool_msg;
+
+    IF (pool_msg IS NULL OR pool_msg = '') THEN
+        RETURN 'Service and compute pool ' || pool_name || ' suspended. No compute is billing. '
+            || 'Call app_public.resume_app() to restart. '
+            || 'Graph data is held in memory only, so it does not survive the suspend - reload it once the service is READY.';
+    END IF;
+
+    RETURN 'Service suspended, but the compute pool was not. ' || pool_msg
+        || ' Suspend it yourself or it keeps billing: ALTER COMPUTE POOL ' || pool_name || ' SUSPEND;';
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.suspend_app() TO APPLICATION ROLE app_admin;
+
+-- Restart after suspend_app(). AUTO_RESUME does not cover an explicitly suspended
+-- pool or service, so both are resumed here.
+CREATE OR REPLACE PROCEDURE app_public.resume_app()
+    RETURNS string
+    LANGUAGE sql
+    EXECUTE AS OWNER
+    AS
+$$
+DECLARE
+    pool_name STRING;
+    pool_msg STRING DEFAULT '';
+BEGIN
+    pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
+
+    IF (pool_name IS NOT NULL) THEN
+        CALL app_public.set_compute_pool_state(:pool_name, 'RESUME') INTO :pool_msg;
+    END IF;
+
+    BEGIN
+        ALTER SERVICE app_public.st_spcs RESUME;
+    EXCEPTION
+        WHEN OTHER THEN
+            RETURN 'Could not resume the service (' || SQLERRM || '). '
+                || 'If it was dropped by stop_app(), call start_app(<POOL>, <WAREHOUSE>) instead.';
+    END;
+
+    RETURN 'Compute pool and service resuming. Poll app_public.get_service_status() until READY. '
+        || 'Graph data is not persisted across a stop, so reload your data once the service is ready.';
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.resume_app() TO APPLICATION ROLE app_admin;
+
+-- Whether anything is still billing: the recorded compute resources and the pool state.
+CREATE OR REPLACE PROCEDURE app_public.get_compute_status()
+    RETURNS VARIANT
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    pool_name STRING;
+    wh_name STRING;
+    pool_state VARIANT DEFAULT NULL;
+BEGIN
+    pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
+    wh_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'warehouse');
+
+    IF (pool_name IS NOT NULL AND REGEXP_LIKE(UPPER(pool_name), '^[A-Z_][A-Z0-9_$]*$')) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW COMPUTE POOLS LIKE ''' || pool_name || '''';
+            pool_state := (
+                SELECT ARRAY_AGG(OBJECT_CONSTRUCT('name', "name", 'state', "state", 'num_services', "num_services"))
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            );
+        EXCEPTION
+            WHEN OTHER THEN
+                pool_state := NULL; -- the app cannot see a consumer-owned pool
+        END;
+    END IF;
+
+    RETURN OBJECT_CONSTRUCT_KEEP_NULL(
+        'compute_pool', pool_name,
+        'warehouse', wh_name,
+        'compute_pool_state', pool_state
+    );
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.get_compute_status() TO APPLICATION ROLE app_admin;
+GRANT USAGE ON PROCEDURE app_public.get_compute_status() TO APPLICATION ROLE app_user;
+
 -- Helpers to fetch service status and logs without requiring external application role switching
 CREATE OR REPLACE PROCEDURE app_public.get_service_status()
     RETURNS VARIANT
