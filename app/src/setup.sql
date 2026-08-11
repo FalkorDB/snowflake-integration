@@ -206,13 +206,33 @@ CREATE OR REPLACE PROCEDURE app_public.start_app(poolname VARCHAR, whname VARCHA
     LANGUAGE sql
     AS $$
 BEGIN
-        -- Create compute pool if it doesn't exist
+        -- Create compute pool if it doesn't exist.
+        -- AUTO_SUSPEND_SECS is a backstop only: it fires when the pool is idle
+        -- (no running services or jobs). While st_spcs is up the pool is never idle,
+        -- so stopping the demo still requires stop_app() or suspend_app().
         EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) 
             MIN_NODES = 1 
             MAX_NODES = 1
             INSTANCE_FAMILY = CPU_X64_S
-            AUTO_RESUME = TRUE'
+            AUTO_RESUME = TRUE
+            AUTO_SUSPEND_SECS = 300'
             USING (poolname);
+
+        -- Remember which pool/warehouse this app was started with, so stop_app()
+        -- and suspend_app() can release them.
+        MERGE INTO app_public.app_config AS t
+        USING (
+            SELECT 'compute_pool' AS config_key, :poolname AS config_value
+            UNION ALL
+            SELECT 'warehouse' AS config_key, :whname AS config_value
+        ) AS s
+        ON t.config_key = s.config_key
+        WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_on = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);
+
+        -- The pool may be suspended from a previous suspend_app()/stop_app().
+        -- AUTO_RESUME does not cover an explicitly suspended pool, so resume it.
+        CALL app_public.set_compute_pool_state(:poolname, 'RESUME');
         
         -- Create warehouse if it doesn't exist
         EXECUTE IMMEDIATE 'CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER(?)
@@ -228,6 +248,16 @@ BEGIN
             FROM SPECIFICATION_FILE = ''falkordb.yaml''
             QUERY_WAREHOUSE = IDENTIFIER(?)'
             USING (poolname, whname);
+
+    -- If the service already existed but was suspended by suspend_app(), the
+    -- CREATE above is a no-op and the service stays suspended. Resume it.
+    BEGIN
+        ALTER SERVICE app_public.st_spcs RESUME;
+    EXCEPTION
+        WHEN OTHER THEN
+            NULL; -- already running
+    END;
+
     GRANT USAGE ON SERVICE app_public.st_spcs TO APPLICATION ROLE app_user;
     GRANT SERVICE ROLE app_public.st_spcs!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
     -- Also grant to app_admin for operational tasks
@@ -781,7 +811,13 @@ var spec = `spec:
 `;
 
 snowflake.execute({
-    sqlText: "CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_S AUTO_RESUME = TRUE",
+    sqlText: "CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_S AUTO_RESUME = TRUE AUTO_SUSPEND_SECS = 300",
+    binds: [POOLNAME]
+});
+
+// The pool may be suspended from a previous suspend_app()/stop_app().
+snowflake.execute({
+    sqlText: "CALL app_public.set_compute_pool_state(?, 'RESUME')",
     binds: [POOLNAME]
 });
 
