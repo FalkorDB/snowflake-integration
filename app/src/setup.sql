@@ -1273,13 +1273,58 @@ END
 $$;
 GRANT USAGE ON PROCEDURE graph.drop_agent(VARCHAR) TO APPLICATION ROLE app_admin;
 
+-- Same as stop_app(), with an explicit pool name for apps that were started before
+-- the pool name was recorded, or when the pool is not the one start_app() used.
+CREATE OR REPLACE PROCEDURE app_public.stop_app(poolname VARCHAR)
+    RETURNS string
+    LANGUAGE sql
+    EXECUTE AS OWNER
+    AS
+$$
+DECLARE
+    pool_msg STRING;
+BEGIN
+    DROP SERVICE IF EXISTS app_public.st_spcs;
+
+    CALL app_public.set_compute_pool_state(:poolname, 'SUSPEND') INTO :pool_msg;
+
+    IF (pool_msg IS NULL OR pool_msg = '') THEN
+        RETURN 'Service dropped and compute pool ' || poolname || ' suspended. No compute is billing.';
+    END IF;
+
+    RETURN 'Service dropped, but the compute pool was not suspended. ' || pool_msg
+        || ' If the pool was created by the consumer rather than by the app, suspend it yourself, '
+        || 'otherwise it keeps billing: ALTER COMPUTE POOL ' || poolname || ' SUSPEND;';
+END
+$$;
+GRANT USAGE ON PROCEDURE app_public.stop_app(VARCHAR) TO APPLICATION ROLE app_admin;
+
+-- Stop the app and release the compute it is billing for.
+--
+-- Dropping the service is not enough: the compute pool created by start_app()
+-- keeps billing per node-hour while it is active, and AUTO_SUSPEND_SECS only fires
+-- once the pool is idle, so the pool must be suspended explicitly.
 CREATE OR REPLACE PROCEDURE app_public.stop_app()
     RETURNS string
     LANGUAGE sql
+    EXECUTE AS OWNER
     AS
 $$
+DECLARE
+    pool_name STRING;
+    result_msg STRING;
 BEGIN
-    DROP SERVICE IF EXISTS app_public.st_spcs;
+    pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
+
+    IF (pool_name IS NULL) THEN
+        DROP SERVICE IF EXISTS app_public.st_spcs;
+        RETURN 'Service dropped. No compute pool is recorded for this app (it was started before this version), '
+            || 'so no pool was suspended and it may still be billing. '
+            || 'Call app_public.stop_app(''<POOL_NAME>'') instead, or suspend it yourself: ALTER COMPUTE POOL <POOL_NAME> SUSPEND;';
+    END IF;
+
+    CALL app_public.stop_app(:pool_name) INTO :result_msg;
+    RETURN result_msg;
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.stop_app() TO APPLICATION ROLE app_admin;
