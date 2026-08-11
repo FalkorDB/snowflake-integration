@@ -6,6 +6,16 @@ CREATE SCHEMA IF NOT EXISTS app_public;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_admin;
 GRANT USAGE ON SCHEMA app_public TO APPLICATION ROLE app_user;
 
+-- Records the compute resources start_app() was given, so stop_app()/suspend_app()
+-- can release them later. Without this the app creates a compute pool it can never
+-- suspend, and the pool keeps billing per node-hour after the app is stopped.
+CREATE TABLE IF NOT EXISTS app_public.app_config (
+    config_key STRING PRIMARY KEY,
+    config_value STRING,
+    updated_on TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+);
+GRANT SELECT ON TABLE app_public.app_config TO APPLICATION ROLE app_admin;
+
 -- Cortex Agent schemas. These mirror the Snowflake-native agent surface used by
 -- graph analytics apps: GRAPH is the public API, AGENT_TOOLS contains callable
 -- tools, and AGENT_ARTEFACTS stores per-agent configuration.
@@ -156,6 +166,40 @@ $$;
 GRANT USAGE ON PROCEDURE app_public.request_table_access(VARCHAR) TO APPLICATION ROLE app_admin;
 GRANT USAGE ON PROCEDURE app_public.request_table_access(VARCHAR) TO APPLICATION ROLE app_user;
 
+
+-- Internal helper: suspend or resume a compute pool.
+-- Returns an empty string on success, or a warning when the app cannot control the
+-- pool - for example when the consumer created it (scripts/instantiate.sql) and only
+-- granted the app USAGE on it.
+CREATE OR REPLACE PROCEDURE app_public.set_compute_pool_state(poolname VARCHAR, new_state VARCHAR)
+    RETURNS STRING
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    action STRING DEFAULT UPPER(new_state);
+    invalid_pool_name EXCEPTION (-20020, 'Invalid compute pool name.');
+    invalid_state EXCEPTION (-20021, 'Compute pool state must be SUSPEND or RESUME.');
+BEGIN
+    IF (poolname IS NULL OR NOT REGEXP_LIKE(UPPER(poolname), '^[A-Z_][A-Z0-9_$]*$')) THEN
+        RAISE invalid_pool_name;
+    END IF;
+    IF (action <> 'SUSPEND' AND action <> 'RESUME') THEN
+        RAISE invalid_state;
+    END IF;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || poolname || ' ' || action;
+        RETURN '';
+    EXCEPTION
+        WHEN OTHER THEN
+            -- Already in the requested state, or the app does not own the pool.
+            RETURN 'Compute pool ' || poolname || ' could not be '
+                || IFF(action = 'SUSPEND', 'suspended', 'resumed') || ' (' || SQLERRM || ').';
+    END;
+END
+$$;
 
 CREATE OR REPLACE PROCEDURE app_public.start_app(poolname VARCHAR, whname VARCHAR)
     RETURNS string
