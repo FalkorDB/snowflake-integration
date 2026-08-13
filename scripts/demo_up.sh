@@ -84,7 +84,19 @@ trap 'exit 130' INT TERM
 run_sql()       { snow sql "${SNOW_ARGS[@]}" -q "$1"; }
 run_sql_file()  { snow sql "${SNOW_ARGS[@]}" -f "$SQL_TMP"; }
 run_sql_quiet() { snow sql "${SNOW_ARGS[@]}" -q "$1" >/dev/null 2>&1; }
-run_sql_json()  { snow sql "${SNOW_ARGS[@]}" --format JSON -q "$1" 2>/dev/null; }
+run_sql_json()  {
+    local out rc
+    out="$(snow sql "${SNOW_ARGS[@]}" --format JSON -q "$1" 2>/tmp/falkordb_snow_err.$$)"; rc=$?
+    if [ $rc -ne 0 ]; then
+        # Without this the caller pipes empty output into a parser, which happily
+        # reports UNKNOWN and we wait out the whole timeout on a hard failure.
+        echo "❌ Query failed:" >&2
+        grep -v "RequestsDependencyWarning\|warnings.warn" /tmp/falkordb_snow_err.$$ >&2 || true
+    fi
+    rm -f /tmp/falkordb_snow_err.$$
+    printf '%s' "$out"
+    return $rc
+}
 
 # Snowflake nests JSON inside VARIANT strings, so this walks into embedded
 # JSON documents as well as plain nested objects.
@@ -125,6 +137,7 @@ m = re.search(r"[\[{].*[\]}]", sys.stdin.read(), re.S)
 if not m: print("UNKNOWN"); sys.exit(0)
 try: data = json.loads(m.group(0))
 except Exception: print("UNKNOWN"); sys.exit(0)
+serving = [False]
 def walk(n):
     if isinstance(n, str):
         s = n.strip()
@@ -136,10 +149,17 @@ def walk(n):
         return [v for i in n for v in walk(i)]
     if isinstance(n, dict):
         out = [str(n["status"]).upper()] if "status" in n else []
+        # get_service_status() reports serving=true only once FalkorDB actually
+        # answers on its port. A container reports READY before that, so this is
+        # the flag to trust, and it is what the app documentation tells users to
+        # poll.
+        if str(n.get("serving", "")).lower() == "true":
+            serving[0] = True
         for v in n.values(): out += walk(v)
         return out
     return []
 s = walk(data)
+if serving[0]: s.append("SERVING")
 print(",".join(s) if s else "UNKNOWN")
 '
 }
@@ -167,14 +187,34 @@ fi
 # ---------------------------------------------------------------------------
 echo "⚙️  Step 1/6: Starting compute pool, warehouse and service..."
 COMPUTE_STARTED=true
-run_sql "CALL ${APP_NAME}.app_public.start_app('${POOL_NAME}', '${WH_NAME}');"
+START_OUT="$(run_sql "CALL ${APP_NAME}.app_public.start_app('${POOL_NAME}', '${WH_NAME}');" 2>&1)" || true
+echo "$START_OUT"
+
+# start_app refuses an unusable pool or warehouse name by *returning* a message
+# rather than failing, so the call looks successful. Without this check the script
+# would go on to wait out the whole READY timeout for a service that was never
+# created. The message states plainly that nothing was created, so no compute is
+# compute is running and the run can stop here.
+case "$START_OUT" in
+    *"Nothing was created by this call"*)
+        COMPUTE_STARTED=false
+        echo ""
+        echo "❌ start_app refused the request. No compute pool or warehouse was created."
+        echo "   Set FALKORDB_POOL and FALKORDB_WAREHOUSE to unquoted identifiers, such as:"
+        echo "   FALKORDB_POOL=POOL_CONSUMER FALKORDB_WAREHOUSE=WH_CONSUMER ./scripts/demo_up.sh"
+        exit 1
+        ;;
+esac
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 2: wait for READY. A cold start pulls the container image, so this can
-# take a few minutes.
+# Step 2: wait until the service is serving. A cold start pulls the container
+# image, so this can take a few minutes. A container reports READY before
+# FalkorDB accepts connections, so the loop keeps waiting for the app's own
+# serving flag and only settles for READY if the flag never appears (an app
+# installed before the flag existed).
 # ---------------------------------------------------------------------------
-echo "⏳ Step 2/6: Waiting for the service to become READY (timeout ${READY_TIMEOUT_SECS}s)..."
+echo "⏳ Step 2/6: Waiting for the service to start serving (timeout ${READY_TIMEOUT_SECS}s)..."
 elapsed=0
 statuses=""
 while [ "$elapsed" -lt "$READY_TIMEOUT_SECS" ]; do
@@ -186,8 +226,8 @@ while [ "$elapsed" -lt "$READY_TIMEOUT_SECS" ]; do
             echo "   Logs: snow sql --role $APP_ROLE -q \"CALL ${APP_NAME}.app_public.get_service_logs('0', 'falkordb-server', 100);\""
             exit 1
             ;;
-        *READY*)
-            echo "✅ Service is READY (after ${elapsed}s)"
+        *SERVING*)
+            echo "✅ Service is READY and serving (after ${elapsed}s)"
             break
             ;;
     esac
@@ -198,18 +238,26 @@ while [ "$elapsed" -lt "$READY_TIMEOUT_SECS" ]; do
 done
 
 case "$statuses" in
-    *READY*) ;;
+    *SERVING*) ;;
+    *READY*)
+        # READY without the serving flag: either the app predates it, or the
+        # container is up but FalkorDB is not listening yet. The query probe
+        # below decides which, and fails with a clear message if it is the latter.
+        echo "ℹ️  Service is READY but did not report serving; confirming with a real query."
+        ;;
     *)
         echo "❌ Service did not become READY within ${READY_TIMEOUT_SECS}s (last status: ${statuses:-none})"
-        echo "   Run ./scripts/demo_down.sh to stop billing."
+        echo "   Run ./scripts/demo_down.sh to shut the compute pool down."
         exit 1
         ;;
 esac
 
 # The service spec declares no readinessProbe, so Snowflake reports READY as soon
 # as the container starts - before FalkorDB is listening on its port. Querying
-# straight away returns "Connection refused" from the service function, so wait
-# for a query to actually succeed rather than trusting the status.
+# straight away returns "Connection refused" from the service function. The
+# serving flag above already reflects a real connection attempt, so this loop
+# normally passes first time; it stays as the final proof that the endpoint this
+# demo actually uses works.
 echo "   Waiting for FalkorDB to accept queries..."
 probe_elapsed=0
 probe_ok=false

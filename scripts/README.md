@@ -108,7 +108,7 @@ For the same demo done by hand, query by query, see
 Six steps, roughly 5–10 minutes on a cold start:
 
 1. Start the compute pool, warehouse and the FalkorDB service
-2. Wait until the service is READY **and actually answering queries**
+2. Wait until the service reports `serving: true` **and actually answers a query**
 3. Upload the Air Routes CSVs into Snowflake tables
 4. Create the graph indexes — *before* any data is loaded
 5. Load airports, then routes, then compute route distances
@@ -149,11 +149,11 @@ Marketplace, or under different names, you must override them.**
 |---|---|---|
 | `FALKORDB_APP_NAME` | `falkordb_app_instance` | The application instance |
 | `FALKORDB_ROLE` | `consumer_role` | Role passed to `snow --role` |
-| `FALKORDB_POOL` | `POOL_CONSUMER` | Compute pool |
-| `FALKORDB_WAREHOUSE` | `WH_CONSUMER` | Warehouse |
+| `FALKORDB_POOL` | `POOL_CONSUMER` | Compute pool. Must be an unquoted identifier (letters, digits, `_`, `$`) |
+| `FALKORDB_WAREHOUSE` | `WH_CONSUMER` | Warehouse. Must be an unquoted identifier |
 | `FALKORDB_DEMO_DB` | `ROUTES_DEMO` | Database holding the demo tables |
 | `FALKORDB_SNOW_CONNECTION` | *(your default)* | Which `snow` connection to use |
-| `FALKORDB_READY_TIMEOUT_SECS` | `900` | How long to wait for the service to report READY |
+| `FALKORDB_READY_TIMEOUT_SECS` | `900` | How long to wait for the service to start serving |
 | `FALKORDB_QUERY_TIMEOUT_SECS` | `300` | How long to wait for it to accept a query |
 
 Example:
@@ -202,8 +202,9 @@ ALTER COMPUTE POOL <pool> SUSPEND;
 ```
 
 **`503 ... Connection refused`** — the service reports READY before FalkorDB is
-listening. `demo_up.sh` handles this by polling a real query, but if you query manually
-right after `start_app`, wait a few seconds.
+listening. `demo_up.sh` handles this by waiting for `get_service_status()` to report
+`serving: true` and then confirming with a real query, but if you query manually
+right after `start_app`, poll `serving` first.
 
 **The service is READY but never answers** — a service resumed after a very long suspend
 can wedge. Reset it:

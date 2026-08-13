@@ -139,7 +139,11 @@ echo "🔍 Step 3/3: Verifying the compute pool state..."
 state=""
 waited=0
 while [ "$waited" -le 120 ]; do
-    state="$(run_sql_json "SHOW COMPUTE POOLS LIKE '${POOL_NAME}';" | json_key "state")"
+    # LIKE treats _ as a single-character wildcard, so 'POOL_CONSUMER' can match
+    # more than one pool and the first row read may belong to a different one.
+    # The name is compared exactly instead, so this reports the state of the pool
+    # this script actually started.
+    state="$(run_sql_json "SHOW COMPUTE POOLS LIKE '${POOL_NAME}'; SELECT \"state\" AS exact_state FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") = UPPER('${POOL_NAME}');" | json_key "exact_state")"
     state_upper="$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
 
     case "$state_upper" in
