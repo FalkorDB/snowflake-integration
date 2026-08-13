@@ -167,6 +167,43 @@ GRANT USAGE ON PROCEDURE app_public.request_table_access(VARCHAR) TO APPLICATION
 GRANT USAGE ON PROCEDURE app_public.request_table_access(VARCHAR) TO APPLICATION ROLE app_user;
 
 
+-- Internal helper: the current state of a compute pool, or NULL when the pool does
+-- not exist or the app cannot see it (a consumer-owned pool). Used to word billing
+-- messages from the pool's real state rather than from what was just requested.
+CREATE OR REPLACE PROCEDURE app_public.compute_pool_state(poolname VARCHAR)
+    RETURNS STRING
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    pool_state STRING DEFAULT NULL;
+BEGIN
+    IF (poolname IS NULL OR NOT REGEXP_LIKE(UPPER(poolname), '^[A-Z_][A-Z0-9_$]*$')) THEN
+        RETURN NULL;
+    END IF;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'SHOW COMPUTE POOLS LIKE ''' || poolname || '''';
+        -- The name is matched exactly rather than collapsed with MAX: LIKE treats '_'
+        -- as a single-character wildcard, so this pattern can return several pools,
+        -- and MAX over the state column would return 'SUSPENDED' in preference to
+        -- 'ACTIVE' - reporting "not billing" for a pool that is. MAX over the
+        -- filtered result is over at most one row.
+        pool_state := (
+            SELECT UPPER(MAX("state"))
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            WHERE UPPER("name") = UPPER(:poolname)
+        );
+    EXCEPTION
+        WHEN OTHER THEN
+            pool_state := NULL;
+    END;
+
+    RETURN pool_state;
+END
+$$;
+
 -- Internal helper: suspend or resume a compute pool.
 -- Returns an empty string on success, or a warning when the app cannot control the
 -- pool - for example when the consumer created it (scripts/instantiate.sql) and only
@@ -179,6 +216,8 @@ AS
 $$
 DECLARE
     action STRING DEFAULT UPPER(new_state);
+    alter_err STRING DEFAULT NULL;
+    pool_state STRING DEFAULT NULL;
     invalid_pool_name EXCEPTION (-20020, 'Invalid compute pool name.');
     invalid_state EXCEPTION (-20021, 'Compute pool state must be SUSPEND or RESUME.');
 BEGIN
@@ -194,10 +233,25 @@ BEGIN
         RETURN '';
     EXCEPTION
         WHEN OTHER THEN
-            -- Already in the requested state, or the app does not own the pool.
-            RETURN 'Compute pool ' || poolname || ' could not be '
-                || IFF(action = 'SUSPEND', 'suspended', 'resumed') || ' (' || SQLERRM || ').';
+            alter_err := SQLERRM;
     END;
+
+    -- The ALTER also fails when the pool is already in, or already moving to, the
+    -- requested state - which is success as far as the caller is concerned. The
+    -- state is re-read instead of pattern-matching Snowflake's error text, so a
+    -- reworded error cannot turn a healthy call into a false failure, and a real
+    -- failure (no ownership, no such pool) is still reported.
+    CALL app_public.compute_pool_state(:poolname) INTO :pool_state;
+
+    IF (action = 'SUSPEND' AND pool_state IN ('SUSPENDED', 'SUSPENDING', 'STOPPING')) THEN
+        RETURN '';
+    END IF;
+    IF (action = 'RESUME' AND pool_state IN ('ACTIVE', 'IDLE', 'STARTING', 'RESUMING')) THEN
+        RETURN '';
+    END IF;
+
+    RETURN 'Compute pool ' || poolname || ' could not be '
+        || IFF(action = 'SUSPEND', 'suspended', 'resumed') || ' (' || alter_err || ').';
 END
 $$;
 
@@ -206,6 +260,21 @@ CREATE OR REPLACE PROCEDURE app_public.start_app(poolname VARCHAR, whname VARCHA
     LANGUAGE sql
     AS $$
 BEGIN
+        -- Refuse an unusable identifier before anything is created. IDENTIFIER()
+        -- accepts a delimited name, so a quoted or hyphenated pool name creates a
+        -- pool that set_compute_pool_state() then refuses to touch - and stop_app(),
+        -- suspend_app() and resume_app() all CALL it without a handler, so that pool
+        -- could never be suspended by the app. This can only refuse a call before it
+        -- creates anything; every name that works today still works.
+        IF (poolname IS NULL OR NOT RLIKE(poolname, '[A-Za-z_][A-Za-z0-9_$]*')) THEN
+            RETURN 'Invalid compute pool name. Use an unquoted Snowflake identifier, '
+                || 'such as FALKORDB_POOL. Nothing was created by this call.';
+        END IF;
+        IF (whname IS NULL OR NOT RLIKE(whname, '[A-Za-z_][A-Za-z0-9_$]*')) THEN
+            RETURN 'Invalid warehouse name. Use an unquoted Snowflake identifier, '
+                || 'such as FALKORDB_WH. Nothing was created by this call.';
+        END IF;
+
         -- Create compute pool if it doesn't exist.
         -- AUTO_SUSPEND_SECS is a backstop only: it fires when the pool is idle
         -- (no running services or jobs). While st_spcs is up the pool is never idle,
@@ -217,6 +286,20 @@ BEGIN
             AUTO_RESUME = TRUE
             AUTO_SUSPEND_SECS = 300'
             USING (poolname);
+
+        -- CREATE ... IF NOT EXISTS leaves an existing pool untouched, so a pool
+        -- from an earlier install keeps whatever AUTO_SUSPEND_SECS it had (the
+        -- Snowflake default is 3600). Apply the backstop to those too. Best
+        -- effort: the pool may be consumer-owned. The name is validated before
+        -- interpolation because ALTER COMPUTE POOL takes a literal identifier.
+        IF (REGEXP_LIKE(UPPER(poolname), '^[A-Z_][A-Z0-9_$]*$')) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || poolname || ' SET AUTO_SUSPEND_SECS = 300';
+            EXCEPTION
+                WHEN OTHER THEN
+                    NULL;
+            END;
+        END IF;
 
         -- Remember which pool/warehouse this app was started with, so stop_app()
         -- and suspend_app() can release them.
@@ -766,6 +849,27 @@ function validateMemory(value, name) {
     return str;
 }
 
+// The same identifier rule set_compute_pool_state() enforces. It is checked here so
+// an unusable name is rejected before anything is created or recorded: that
+// procedure RAISEs on a bad name, and stop_app()/suspend_app() call it without a
+// handler, so a bad name recorded in app_config would make them abort with a raw
+// error instead of returning their guidance.
+function validateIdentifier(value, name, example) {
+    if (value === null || value === undefined) {
+        throw new Error("Missing " + name + ". Pass an unquoted Snowflake identifier, " +
+            "such as " + example + ". Nothing was created by this call.");
+    }
+    var str = String(value);
+    if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(str)) {
+        throw new Error("Invalid " + name + ". Use an unquoted Snowflake identifier, " +
+            "such as " + example + ". Nothing was created by this call.");
+    }
+    return str;
+}
+
+validateIdentifier(POOLNAME, "compute pool name", "FALKORDB_POOL");
+validateIdentifier(WHNAME, "warehouse name", "FALKORDB_WH");
+
 var cpuRequest = validateCpu(getOption(OPTIONS, ["cpuRequest", "cpu_request", "CPUREQUEST", "CPU_REQUEST"], 1), "cpuRequest");
 var memoryRequest = validateMemory(getOption(OPTIONS, ["memoryRequest", "memory_request", "MEMORYREQUEST", "MEMORY_REQUEST"], "2G"), "memoryRequest");
 var cpuLimit = validateCpu(getOption(OPTIONS, ["cpuLimit", "cpu_limit", "CPULIMIT", "CPU_LIMIT"], 2), "cpuLimit");
@@ -810,6 +914,63 @@ var spec = `spec:
       public: true
 `;
 
+var dollarQuote = String.fromCharCode(36) + String.fromCharCode(36);
+
+// Establish whether the service already exists BEFORE any compute is created.
+// ALTER SERVICE ... FROM SPECIFICATION cannot move a service to another compute
+// pool, so if the service is already running on a different pool than the one
+// requested, creating the requested pool would start a second pool that never runs
+// anything. That is rejected up front, before the pool exists.
+//
+// DESCRIBE SERVICE is used rather than SHOW SERVICES because it fails loudly for a
+// missing service instead of returning an empty result that cannot be told apart
+// from "the lookup did not work" - the same false-negative service_exists() guards
+// against. An unreadable lookup is treated as unknown and stops the call, so an
+// unrecorded pool can never be created on a guess.
+var existingPool = null;
+var existingWarehouse = null;
+try {
+    snowflake.execute({ sqlText: "DESCRIBE SERVICE app_public.st_spcs" });
+    var svcRs = snowflake.execute({
+        sqlText: "SELECT \"compute_pool\", \"query_warehouse\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"
+    });
+    if (svcRs.next()) {
+        existingPool = svcRs.getColumnValue(1);
+        existingWarehouse = svcRs.getColumnValue(2);
+    }
+} catch (descErr) {
+    if (String(descErr.message).indexOf("does not exist") < 0) {
+        throw new Error("Could not determine whether the FalkorDB service already exists (" +
+            descErr.message + "). No compute pool or warehouse was created. " +
+            "Resolve that error and try again.");
+    }
+    // "does not exist or not authorized" is the definitive absent answer.
+    existingPool = null;
+    existingWarehouse = null;
+}
+
+if (existingPool !== null && String(existingPool).toUpperCase() !== String(POOLNAME).toUpperCase()) {
+    throw new Error("The FalkorDB service already runs on compute pool " + existingPool +
+        ", so it cannot be moved to " + POOLNAME + ". No compute pool or warehouse was " +
+        "created by this call. Either call start_app with '" + existingPool +
+        "', or call app_public.stop_app() first, which drops the service and suspends " +
+        existingPool + ".");
+}
+
+// The pool and warehouse are recorded BEFORE any compute is created. If a later
+// statement in this procedure fails, stop_app() and suspend_app() can still find
+// the pool and suspend it; recording afterwards would leave a running, unrecorded
+// pool billing with no way for the app to release it.
+snowflake.execute({
+    sqlText: "MERGE INTO app_public.app_config AS t " +
+        "USING (SELECT 'compute_pool' AS config_key, ? AS config_value " +
+        "UNION ALL SELECT 'warehouse', ?) AS s " +
+        "ON t.config_key = s.config_key " +
+        "WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_on = CURRENT_TIMESTAMP() " +
+        "WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value)",
+    binds: [POOLNAME, WHNAME]
+});
+
 snowflake.execute({
     sqlText: "CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(?) MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_S AUTO_RESUME = TRUE AUTO_SUSPEND_SECS = 300",
     binds: [POOLNAME]
@@ -826,11 +987,46 @@ snowflake.execute({
     binds: [WHNAME]
 });
 
-var dollarQuote = String.fromCharCode(36) + String.fromCharCode(36);
-snowflake.execute({
-    sqlText: "CREATE SERVICE app_public.st_spcs IN COMPUTE POOL IDENTIFIER(?) FROM SPECIFICATION " + dollarQuote + spec + dollarQuote + " QUERY_WAREHOUSE = IDENTIFIER(?)",
-    binds: [POOLNAME, WHNAME]
-});
+
+// A bare CREATE SERVICE fails when the service already exists, which made every
+// repeat call of this procedure fail after it had already created and resumed the
+// compute pool. An existing service is updated with ALTER SERVICE instead, so custom
+// CPU and memory take effect rather than being silently ignored (which is what
+// CREATE SERVICE IF NOT EXISTS would do). The branch is decided by the lookup above,
+// which is authoritative, rather than by guessing from a failed CREATE.
+var serviceUpdated = false;
+try {
+    if (existingPool !== null) {
+        snowflake.execute({
+            sqlText: "ALTER SERVICE app_public.st_spcs FROM SPECIFICATION " + dollarQuote + spec + dollarQuote,
+            binds: []
+        });
+        // FROM SPECIFICATION does not change QUERY_WAREHOUSE, so it is set separately
+        // when the caller asked for a warehouse the service is not already using.
+        if (existingWarehouse !== null &&
+            String(existingWarehouse).toUpperCase() !== String(WHNAME).toUpperCase()) {
+            snowflake.execute({
+                sqlText: "ALTER SERVICE app_public.st_spcs SET QUERY_WAREHOUSE = IDENTIFIER(?)",
+                binds: [WHNAME]
+            });
+        }
+        serviceUpdated = true;
+    } else {
+        snowflake.execute({
+            sqlText: "CREATE SERVICE app_public.st_spcs IN COMPUTE POOL IDENTIFIER(?) FROM SPECIFICATION " + dollarQuote + spec + dollarQuote + " QUERY_WAREHOUSE = IDENTIFIER(?)",
+            binds: [POOLNAME, WHNAME]
+        });
+    }
+} catch (svcErr) {
+    // The compute pool has already been created and resumed at this point, so the
+    // error has to say so - the requested CPU or memory not fitting the pool's node
+    // is the most likely reason to land here, and it is reached with compute running.
+    throw new Error((existingPool !== null
+            ? "Could not apply the requested resources to the existing service ("
+            : "Could not create the service (") + svcErr.message +
+        "). Compute pool " + POOLNAME + " is running and is recorded in app_config - " +
+        "call app_public.stop_app() to drop the service and suspend it.");
+}
 
 var startResult = snowflake.execute({
     sqlText: "CALL app_public.start_app(?, ?)",
@@ -838,7 +1034,7 @@ var startResult = snowflake.execute({
 });
 startResult.next();
 
-return "Service started with custom resources: request " + cpuRequest + " CPU / " + memoryRequest + ", limit " + cpuLimit + " CPU / " + memoryLimit + ". Check status, and when ready, get URL.";
+return "Service " + (serviceUpdated ? "updated" : "started") + " with custom resources: request " + cpuRequest + " CPU / " + memoryRequest + ", limit " + cpuLimit + " CPU / " + memoryLimit + ". Poll app_public.get_service_status() until serving is true, then get the URL.";
 $$;
 GRANT USAGE ON PROCEDURE app_public.start_app(VARCHAR, VARCHAR, OBJECT) TO APPLICATION ROLE app_admin;
 
@@ -1273,6 +1469,47 @@ END
 $$;
 GRANT USAGE ON PROCEDURE graph.drop_agent(VARCHAR) TO APPLICATION ROLE app_admin;
 
+-- TRUE when the SPCS service object exists.
+--
+-- SHOW is used rather than SYSTEM$GET_SERVICE_STATUS because SHOW returns an empty
+-- result for a missing service, while SYSTEM$GET_SERVICE_STATUS raises EXPRESSION_ERROR.
+-- Not granted to any application role: this is an internal helper.
+CREATE OR REPLACE PROCEDURE app_public.service_exists()
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    found INTEGER DEFAULT 0;
+    probe STRING;
+BEGIN
+    BEGIN
+        SHOW SERVICES LIKE 'ST_SPCS' IN SCHEMA app_public;
+        found := (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+    EXCEPTION
+        WHEN OTHER THEN
+            found := 0;
+    END;
+
+    IF (found > 0) THEN
+        RETURN TRUE;
+    END IF;
+
+    -- Confirm before reporting absence. A false negative here would make
+    -- resume_app() refuse to resume a service that really is there, so an empty
+    -- or failed SHOW is checked against the status function, which raises only
+    -- when the service is genuinely missing.
+    BEGIN
+        probe := SYSTEM$GET_SERVICE_STATUS('app_public.st_spcs');
+        RETURN TRUE;
+    EXCEPTION
+        WHEN OTHER THEN
+            RETURN FALSE;
+    END;
+END
+$$;
+
 -- Same as stop_app(), with an explicit pool name for apps that were started before
 -- the pool name was recorded, or when the pool is not the one start_app() used.
 CREATE OR REPLACE PROCEDURE app_public.stop_app(poolname VARCHAR)
@@ -1283,18 +1520,30 @@ CREATE OR REPLACE PROCEDURE app_public.stop_app(poolname VARCHAR)
 $$
 DECLARE
     pool_msg STRING;
+    pool_state STRING;
 BEGIN
     DROP SERVICE IF EXISTS app_public.st_spcs;
 
     CALL app_public.set_compute_pool_state(:poolname, 'SUSPEND') INTO :pool_msg;
 
     IF (pool_msg IS NULL OR pool_msg = '') THEN
-        RETURN 'Service dropped and compute pool ' || poolname || ' suspended. No compute is billing.';
+        -- A pool bills until it actually reaches SUSPENDED: STOPPING and SUSPENDING
+        -- are still charged, so the message is worded from the state, not from the
+        -- fact that the SUSPEND was accepted.
+        CALL app_public.compute_pool_state(:poolname) INTO :pool_state;
+
+        IF (pool_state = 'SUSPENDED') THEN
+            RETURN 'Service dropped and compute pool ' || poolname || ' suspended. No compute is running.';
+        END IF;
+
+        RETURN 'Service dropped and compute pool ' || poolname || ' is suspending (state: '
+            || COALESCE(pool_state, 'UNKNOWN') || '). It is not fully stopped until it reaches '
+            || 'SUSPENDED - confirm with app_public.get_compute_status().';
     END IF;
 
     RETURN 'Service dropped, but the compute pool was not suspended. ' || pool_msg
         || ' If the pool was created by the consumer rather than by the app, suspend it yourself, '
-        || 'otherwise it keeps billing: ALTER COMPUTE POOL ' || poolname || ' SUSPEND;';
+        || 'otherwise it stays running: ALTER COMPUTE POOL ' || poolname || ' SUSPEND;';
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.stop_app(VARCHAR) TO APPLICATION ROLE app_admin;
@@ -1318,9 +1567,10 @@ BEGIN
 
     IF (pool_name IS NULL) THEN
         DROP SERVICE IF EXISTS app_public.st_spcs;
-        RETURN 'Service dropped. No compute pool is recorded for this app (it was started before this version), '
-            || 'so no pool was suspended and it may still be billing. '
-            || 'Call app_public.stop_app(''<POOL_NAME>'') instead, or suspend it yourself: ALTER COMPUTE POOL <POOL_NAME> SUSPEND;';
+        RETURN 'Any service was dropped. No compute pool is recorded for this app, so no pool '
+            || 'was suspended. If the app was started before this version, its pool may still be '
+            || 'running: call app_public.stop_app(''<POOL_NAME>'') with the pool name, '
+            || 'or suspend it yourself: ALTER COMPUTE POOL <POOL_NAME> SUSPEND;';
     END IF;
 
     CALL app_public.stop_app(:pool_name) INTO :result_msg;
@@ -1330,8 +1580,8 @@ $$;
 GRANT USAGE ON PROCEDURE app_public.stop_app() TO APPLICATION ROLE app_admin;
 
 -- Cheap stop for repeat demos: suspends the service and the compute pool but keeps
--- the service definition, so resume_app() restarts in seconds instead of requiring a
--- full start_app(). Billing stops the same way it does with stop_app().
+-- the service definition, so resume_app() does not have to recreate it the way a
+-- full start_app() would. Billing stops the same way it does with stop_app().
 CREATE OR REPLACE PROCEDURE app_public.suspend_app()
     RETURNS string
     LANGUAGE sql
@@ -1341,31 +1591,60 @@ $$
 DECLARE
     pool_name STRING;
     pool_msg STRING;
+    pool_state STRING;
+    has_service BOOLEAN DEFAULT FALSE;
+    svc_err STRING DEFAULT NULL;
+    svc_note STRING;
 BEGIN
+    CALL app_public.service_exists() INTO :has_service;
+
     BEGIN
         ALTER SERVICE IF EXISTS app_public.st_spcs SUSPEND;
     EXCEPTION
         WHEN OTHER THEN
-            NULL; -- no service, or it is already suspended
+            svc_err := SQLERRM;
     END;
+
+    -- The failure is reported rather than swallowed: claiming "Service suspended."
+    -- after a failed ALTER would hide a service that is still running and billing.
+    -- An already-suspended service also lands here, so the wording covers both.
+    IF (NOT has_service) THEN
+        svc_note := 'No service was running.';
+    ELSEIF (svc_err IS NOT NULL) THEN
+        svc_note := 'The service may not have been suspended (' || svc_err
+            || ') - it is often already suspended. Confirm with app_public.get_service_status().';
+    ELSE
+        svc_note := 'Service suspended.';
+    END IF;
 
     pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
 
     IF (pool_name IS NULL) THEN
-        RETURN 'Service suspended. No compute pool is recorded for this app, so no pool was suspended '
-            || 'and it may still be billing: ALTER COMPUTE POOL <POOL_NAME> SUSPEND;';
+        RETURN svc_note || IFF(has_service,
+            ' No compute pool is recorded for this app, so no pool was suspended and it may '
+                || 'still be running: ALTER COMPUTE POOL <POOL_NAME> SUSPEND;',
+            ' No compute pool is recorded for this app either, so there is nothing to suspend.');
     END IF;
 
     CALL app_public.set_compute_pool_state(:pool_name, 'SUSPEND') INTO :pool_msg;
 
     IF (pool_msg IS NULL OR pool_msg = '') THEN
-        RETURN 'Service and compute pool ' || pool_name || ' suspended. No compute is billing. '
-            || 'Call app_public.resume_app() to restart. '
-            || 'Graph data is held in memory only, so it does not survive the suspend - reload it once the service is READY.';
+        -- STOPPING and SUSPENDING still bill, so only SUSPENDED is reported as free.
+        CALL app_public.compute_pool_state(:pool_name) INTO :pool_state;
+
+        RETURN svc_note || ' Compute pool ' || pool_name
+            || IFF(pool_state = 'SUSPENDED',
+                   ' suspended. No compute is running. ',
+                   ' is suspending (state: ' || COALESCE(pool_state, 'UNKNOWN')
+                       || '). It is not fully stopped until it reaches SUSPENDED - confirm '
+                       || 'with app_public.get_compute_status(). ')
+            || IFF(has_service, 'Call app_public.resume_app() to restart. ',
+                                'Call app_public.start_app(''<POOL_NAME>'', ''<WAREHOUSE_NAME>'') to start it. ')
+            || 'Graph data is held in memory only, so it does not survive the suspend - reload it once the service is serving.';
     END IF;
 
-    RETURN 'Service suspended, but the compute pool was not. ' || pool_msg
-        || ' Suspend it yourself or it keeps billing: ALTER COMPUTE POOL ' || pool_name || ' SUSPEND;';
+    RETURN svc_note || ' The compute pool was not suspended. ' || pool_msg
+        || ' Suspend it yourself or it stays running: ALTER COMPUTE POOL ' || pool_name || ' SUSPEND;';
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.suspend_app() TO APPLICATION ROLE app_admin;
@@ -1381,7 +1660,20 @@ $$
 DECLARE
     pool_name STRING;
     pool_msg STRING DEFAULT '';
+    has_service BOOLEAN DEFAULT FALSE;
+    resume_err STRING;
 BEGIN
+    -- The service is checked before the compute pool is touched. Resuming the pool
+    -- first would start billing for a service that stop_app() dropped and that
+    -- resume_app() cannot recreate, leaving a pool billing with nothing running.
+    CALL app_public.service_exists() INTO :has_service;
+
+    IF (NOT has_service) THEN
+        RETURN 'No service to resume: it was either dropped by stop_app() or never started. '
+            || 'Call app_public.start_app(''<POOL_NAME>'', ''<WAREHOUSE_NAME>'') to create it. '
+            || 'The compute pool was left untouched, so this call started no compute.';
+    END IF;
+
     pool_name := (SELECT MAX(config_value) FROM app_public.app_config WHERE config_key = 'compute_pool');
 
     IF (pool_name IS NOT NULL) THEN
@@ -1389,15 +1681,39 @@ BEGIN
     END IF;
 
     BEGIN
-        ALTER SERVICE app_public.st_spcs RESUME;
+        ALTER SERVICE IF EXISTS app_public.st_spcs RESUME;
     EXCEPTION
         WHEN OTHER THEN
-            RETURN 'Could not resume the service (' || SQLERRM || '). '
-                || 'If it was dropped by stop_app(), call start_app(<POOL>, <WAREHOUSE>) instead.';
+            -- Usually "already running". The pool is deliberately left alone here:
+            -- the service exists, so the pool is meant to be running, and suspending
+            -- it on this path would stop a healthy service.
+            resume_err := SQLERRM;
     END;
 
-    RETURN 'Compute pool and service resuming. Poll app_public.get_service_status() until READY. '
-        || 'Graph data is not persisted across a stop, so reload your data once the service is ready.';
+    -- Surface a failed pool resume: the service can report READY only once the
+    -- pool is running, so hiding this would leave the caller polling forever.
+    IF (pool_msg IS NOT NULL AND pool_msg <> '') THEN
+        RETURN pool_msg || ' The service was asked to resume, but it cannot start '
+            || 'until the compute pool is running. Resume the pool yourself: '
+            || 'ALTER COMPUTE POOL ' || pool_name || ' RESUME;';
+    END IF;
+
+    IF (resume_err IS NOT NULL) THEN
+        RETURN IFF(pool_name IS NULL,
+                   'No compute pool is recorded for this app, so no pool was resumed. ',
+                   'Compute pool ' || pool_name || ' resumed. ')
+            || 'The service was not resumed (' || resume_err
+            || '), which usually means it is already running. '
+            || 'Poll app_public.get_service_status() until serving is true. '
+            || 'If you did not intend to start compute, call app_public.stop_app().';
+    END IF;
+
+    RETURN IFF(pool_name IS NULL,
+               'Service resuming. No compute pool is recorded for this app, so none was resumed. ',
+               'Compute pool and service resuming. ')
+        || 'Poll app_public.get_service_status() until serving is true - a container can '
+        || 'report READY before FalkorDB accepts connections. '
+        || 'Graph data is not persisted across a stop, so reload your data once the service is serving.';
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.resume_app() TO APPLICATION ROLE app_admin;
@@ -1441,6 +1757,12 @@ GRANT USAGE ON PROCEDURE app_public.get_compute_status() TO APPLICATION ROLE app
 GRANT USAGE ON PROCEDURE app_public.get_compute_status() TO APPLICATION ROLE app_user;
 
 -- Helpers to fetch service status and logs without requiring external application role switching
+--
+-- SPCS reports a container READY as soon as its process is running, which is before
+-- FalkorDB is listening on its port, so a READY service can still answer
+-- "503 ... Connection refused". The 'serving' flag closes that gap by asking the
+-- service itself. It is only probed once the service claims to be READY, so the
+-- usual startup polling loop stays a cheap metadata call.
 CREATE OR REPLACE PROCEDURE app_public.get_service_status()
     RETURNS VARIANT
     LANGUAGE SQL
@@ -1449,8 +1771,39 @@ AS
 $$
 DECLARE
     service_name STRING DEFAULT 'app_public.st_spcs';
+    raw_status STRING;
+    serving BOOLEAN DEFAULT FALSE;
 BEGIN
-    RETURN SYSTEM$GET_SERVICE_STATUS(:service_name);
+    -- SYSTEM$GET_SERVICE_STATUS raises EXPRESSION_ERROR when the service does not
+    -- exist, which is exactly the state after stop_app(), so it is guarded here.
+    BEGIN
+        raw_status := SYSTEM$GET_SERVICE_STATUS(:service_name);
+    EXCEPTION
+        WHEN OTHER THEN
+            RETURN OBJECT_CONSTRUCT_KEEP_NULL('containers', NULL, 'serving', FALSE);
+    END;
+
+    IF (raw_status ILIKE '%READY%') THEN
+        BEGIN
+            -- graph_list is used rather than a Cypher query because it takes no
+            -- graph name and creates nothing; querying a graph would leave an
+            -- empty health-check graph behind.
+            EXECUTE IMMEDIATE 'SELECT app_public.graph_list_raw({})';
+            serving := TRUE;
+        EXCEPTION
+            WHEN OTHER THEN
+                -- Not listening yet, or the app has never been started, so the
+                -- service functions do not exist.
+                serving := FALSE;
+        END;
+    END IF;
+
+    -- KEEP_NULL so the 'containers' key is always present: plain OBJECT_CONSTRUCT
+    -- silently drops keys whose value is NULL.
+    RETURN OBJECT_CONSTRUCT_KEEP_NULL(
+        'containers', TRY_PARSE_JSON(raw_status),
+        'serving', serving
+    );
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.get_service_status() TO APPLICATION ROLE app_admin;
@@ -1466,6 +1819,12 @@ DECLARE
     service_name STRING DEFAULT 'app_public.st_spcs';
 BEGIN
     RETURN SYSTEM$GET_SERVICE_LOGS(:service_name, instance_id, container, lines);
+EXCEPTION
+    WHEN OTHER THEN
+        -- No service means no logs. Returning the reason keeps this usable while
+        -- debugging a service that failed to start, instead of raising.
+        RETURN 'No logs available (' || SQLERRM || '). '
+            || 'If the service was dropped by stop_app(), start it with app_public.start_app().';
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.get_service_logs(STRING, STRING, INTEGER) TO APPLICATION ROLE app_admin;
@@ -1486,6 +1845,11 @@ BEGIN
         SELECT ARRAY_AGG(OBJECT_CONSTRUCT(*))
         FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
     );
+EXCEPTION
+    WHEN OTHER THEN
+        -- No service, so no containers. An empty array keeps the return type stable
+        -- for callers that iterate it, rather than raising.
+        RETURN ARRAY_CONSTRUCT();
 END
 $$;
 GRANT USAGE ON PROCEDURE app_public.get_service_containers() TO APPLICATION ROLE app_admin;
