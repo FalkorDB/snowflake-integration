@@ -79,6 +79,11 @@ Note: the staged file is always named `consumer_data.csv`, regardless of the bou
 Rebind `consumer_data_table` to `ROUTES_DEMO.PUBLIC.ROUTES`, then:
 
 ```sql
+CALL <app_instance_name>.app_public.register_callback('consumer_data_table', 'ADD',
+  SYSTEM$REFERENCE('TABLE', 'ROUTES_DEMO.PUBLIC.ROUTES', 'PERSISTENT', 'SELECT'));
+```
+
+```sql
 CALL <app_instance_name>.app_public.load_csv('airroutes',
   'LOAD CSV FROM ''file://consumer_data.csv'' AS row
    MATCH (src:Airport {iata_code: row[2]})

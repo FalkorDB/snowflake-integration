@@ -481,12 +481,14 @@ compute is always an explicit step.
 -- From the app: suspends the service and the compute pool it created
 CALL <app_instance_name>.app_public.suspend_app();
 
--- Restart, then poll until READY. Graph data is in memory only, so reload it.
+-- Restart, then poll until serving is true. Graph data is in memory only, so reload it.
 CALL <app_instance_name>.app_public.resume_app();
 CALL <app_instance_name>.app_public.get_service_status();
 
--- Confirm nothing is left billing
+-- Confirm the compute pool is suspended. This reports the pool state only —
+-- a warehouse bills separately, so check it too.
 CALL <app_instance_name>.app_public.get_compute_status();
+SHOW WAREHOUSES LIKE 'FALKORDB_WH';
 ```
 
 If you created the compute pool yourself, the app cannot suspend it — do it directly:
