@@ -142,6 +142,38 @@ CALL <app_instance_name>.app_public.start_app(
 );
 ```
 
+### Stop paying when you are not using the app
+
+The compute pool bills per node-hour for as long as it is active. FalkorDB runs as a
+long-running service, so the pool never becomes idle and `AUTO_SUSPEND_SECS` never
+fires — the pool has to be suspended explicitly.
+
+```sql
+-- Pause: suspends the service and the compute pool, keeps the service definition
+-- so resuming does not have to recreate it. Graph data is in memory only and must
+-- be reloaded.
+CALL <app_instance_name>.app_public.suspend_app();
+
+-- Resume, then poll until serving is true
+CALL <app_instance_name>.app_public.resume_app();
+CALL <app_instance_name>.app_public.get_service_status();
+
+-- Check whether anything is still billing
+CALL <app_instance_name>.app_public.get_compute_status();
+```
+
+`stop_app()` also suspends the compute pool, and additionally drops the service.
+
+If the compute pool was created by you rather than by `start_app()`, the app cannot
+suspend it — the procedures will say so, and you suspend it yourself:
+
+```sql
+ALTER COMPUTE POOL FALKORDB_POOL SUSPEND;
+```
+
+Graphs are not persisted across a stop or suspend (the service mounts a stage for CSV
+staging only), so reload your data after resuming.
+
 **Advanced**: If you need a larger Snowflake compute pool or warehouse, create them manually **before** calling `start_app()`:
 
 ```sql
@@ -497,13 +529,41 @@ $falkordb-snowflake-native-app-skill
 - Example: `CALL app_public.check_bound_table();`
 
 **`get_service_status()`**
-- Returns the current status of the FalkorDB service
+- Returns the current status of the FalkorDB service, as `{ "containers": [...], "serving": true|false }`
+- Wait for **`serving`**, not just `READY`. Snowflake reports a container READY as soon as its process starts, which is before FalkorDB accepts connections, so querying a merely-READY service can fail with `503 ... Connection refused`
+- `serving` is only probed once the service reports READY, so polling during startup stays cheap
 
-**`get_service_logs(container_name VARCHAR, num_lines INTEGER)`**
+**`get_service_logs(instance_id VARCHAR, container_name VARCHAR, num_lines INTEGER)`**
 - Retrieves service logs for troubleshooting
+- Example: `CALL app_public.get_service_logs('0', 'falkordb-server', 100);`
 
 **`get_service_containers()`**
 - Lists all running FalkorDB service containers
+
+**`suspend_app()`**
+- Suspends the FalkorDB service **and** the compute pool recorded by `start_app()`, so the compute pool stops billing
+- Keeps the service definition, so `resume_app()` does not have to recreate it. Startup time is dominated by the container image and data reload, so plan for minutes, not seconds
+- Reports whether the pool reached `SUSPENDED` or is still `STOPPING` — a pool keeps billing until it is `SUSPENDED`
+- Does **not** suspend the warehouse; `start_app()` creates it with `AUTO_SUSPEND = 300`, but a warehouse you supplied yourself may be configured differently
+- Graph data is held in memory only and does **not** survive the suspend — reload it after `resume_app()`
+- Reports a warning if the compute pool is consumer-owned and cannot be suspended by the app
+- Example: `CALL app_public.suspend_app();`
+
+**`resume_app()`**
+- Resumes the compute pool and the service after `suspend_app()`
+- Needed because `AUTO_RESUME` does not cover an explicitly suspended pool or service
+- Poll `get_service_status()` until `serving` is true; reload graph data, which is not persisted
+- Example: `CALL app_public.resume_app();`
+
+**`stop_app()`** / **`stop_app(poolname VARCHAR)`**
+- Drops the FalkorDB service and suspends the compute pool recorded by `start_app()`
+- Pass `poolname` explicitly for apps started before the pool name was recorded
+- Example: `CALL app_public.stop_app();`
+
+**`get_compute_status()`**
+- Returns the compute pool and warehouse the app was started with, plus the **compute pool** state
+- Use it to confirm the compute pool is suspended. It reports the warehouse *name* only, not its state — a warehouse bills separately while it runs, so check it with `SHOW WAREHOUSES LIKE '<name>'`
+- Example: `CALL app_public.get_compute_status();`
 
 ---
 

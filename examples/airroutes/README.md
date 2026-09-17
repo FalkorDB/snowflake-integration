@@ -2,6 +2,11 @@
 
 Load two CSVs into Snowflake, build a graph with the FalkorDB Native App, and answer a multi-hop question. This is the exact flow shown in the FalkorDB Snowflake webinar.
 
+> **Shortcut**: everything below is scripted. Run `./scripts/demo_up.sh` from the
+> repo root to get the whole demo — service, tables, indexes, graph — in one
+> command, and `./scripts/demo_down.sh` when you are done. Read on for the manual
+> walkthrough.
+
 ## Files
 
 | File | Size | Contents |
@@ -47,6 +52,14 @@ CALL <app_instance_name>.app_public.graph_query('airroutes',
 
 Bind `ROUTES_DEMO.PUBLIC.AIRPORTS` to the app's `consumer_data_table` reference, then:
 
+Binding can be done in the app's **Permissions** tab, or from SQL, which is what the
+script uses:
+
+```sql
+CALL <app_instance_name>.app_public.register_callback('consumer_data_table', 'ADD',
+  SYSTEM$REFERENCE('TABLE', 'ROUTES_DEMO.PUBLIC.AIRPORTS', 'PERSISTENT', 'SELECT'));
+```
+
 ```sql
 CALL <app_instance_name>.app_public.load_csv('airroutes',
   'LOAD CSV FROM ''file://consumer_data.csv'' AS row
@@ -64,6 +77,11 @@ Note: the staged file is always named `consumer_data.csv`, regardless of the bou
 ## 5. Load routes
 
 Rebind `consumer_data_table` to `ROUTES_DEMO.PUBLIC.ROUTES`, then:
+
+```sql
+CALL <app_instance_name>.app_public.register_callback('consumer_data_table', 'ADD',
+  SYSTEM$REFERENCE('TABLE', 'ROUTES_DEMO.PUBLIC.ROUTES', 'PERSISTENT', 'SELECT'));
+```
 
 ```sql
 CALL <app_instance_name>.app_public.load_csv('airroutes',

@@ -4,8 +4,8 @@ manifest_version: 1
 version:
   name: V2
   label: "Version Two"
-  comment: "Set FalkorDB query timeouts (TIMEOUT_DEFAULT 60s, TIMEOUT_MAX 120s) so large loads succeed and runaway queries are capped"
-  patch: 48
+  comment: "start_app() now records the compute pool before creating it and refuses an unusable pool name, an existing service is updated instead of failing, and stop_app()/suspend_app()/resume_app() report the pool's real state so a pool that is still shutting down is not described as stopped"
+  patch: 52
 
 
 #artifacts that are distributed from this version of the package

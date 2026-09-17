@@ -16,7 +16,7 @@ use database falkordb_app;
 create schema if not exists falkordb_app.napp;
 create stage if not exists falkordb_app.napp.app_stage;
 create image repository if not exists falkordb_app.napp.img_repo;
-create warehouse if not exists wh_falkordb with warehouse_size='xsmall';
+create warehouse if not exists wh_falkordb with warehouse_size='xsmall' auto_suspend=300 auto_resume=true initially_suspended=true;
 
 -- Get Image Repository URL
 use role falkordb_role;

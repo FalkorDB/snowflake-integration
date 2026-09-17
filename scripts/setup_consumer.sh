@@ -28,7 +28,7 @@ GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE consumer_role;
 GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO ROLE consumer_role WITH GRANT OPTION;
 
 -- Create consumer warehouse
-CREATE WAREHOUSE IF NOT EXISTS wh_consumer WITH warehouse_size='xsmall';
+CREATE WAREHOUSE IF NOT EXISTS wh_consumer WITH warehouse_size='xsmall' auto_suspend=300 auto_resume=true initially_suspended=true;
 GRANT USAGE ON WAREHOUSE wh_consumer TO ROLE consumer_role WITH GRANT OPTION;
 
 -- Grant access to the application package (this needs to be done after the package is created)

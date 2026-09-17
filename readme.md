@@ -30,6 +30,45 @@ Create an app instance and configure staging connections:
 ./scripts/instansiate_app.sh
 ```
 
+## How to Run the Demo (day to day)
+
+After the one-time setup above, there are just two scripts:
+
+```bash
+./scripts/demo_up.sh      # start everything and load the full demo
+./scripts/demo_down.sh    # stop everything so nothing bills
+```
+
+`demo_up.sh` does the whole thing in one command: starts the compute pool, warehouse
+and service, waits until the service is READY, uploads the Air Routes CSVs
+(`examples/airroutes`, ~48k airports and ~67k routes) into Snowflake, **creates the
+graph indexes before loading any data**, binds each table to the app with
+`register_callback` + `SYSTEM$REFERENCE` (no Permissions UI needed), loads the
+airports and routes, computes route distances, and prints the FalkorDB Browser URL.
+
+`demo_down.sh` suspends the service **and the compute pool**. This matters: the pool
+bills per node-hour for as long as it is active and **nothing suspends it
+automatically** — the FalkorDB service is a long-running container, so the pool is
+never idle and `AUTO_SUSPEND_SECS` never fires.
+
+Both are safe to re-run. Useful flags:
+
+```bash
+./scripts/demo_up.sh --skip-upload   # rebuild the graph, reuse the Snowflake tables
+./scripts/demo_up.sh --no-data       # start the service only
+./scripts/demo_down.sh --drop        # drop the service instead of suspending it
+```
+
+Data is reloaded on every start because graph data is not persisted (the service
+mounts a stage for CSV staging only).
+
+Defaults can be overridden with environment variables: `FALKORDB_APP_NAME`,
+`FALKORDB_ROLE`, `FALKORDB_POOL`, `FALKORDB_WAREHOUSE`, `FALKORDB_DEMO_DB`,
+`FALKORDB_SNOW_CONNECTION`.
+
+Use `demo_down.sh` between demos, and the teardown scripts below only when you want
+to remove the environment entirely.
+
 ## How to Use the Demo
 
 Once the demo is running, you can call the FalkorDB app procedure:
