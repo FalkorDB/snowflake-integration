@@ -156,6 +156,12 @@ Multi-part loads are sequential and are not rolled back as a single unit. If one
 
 ### Querying Graphs
 
+| Parameter | Type | Meaning |
+|---|---|---|
+| `graph_name` | VARCHAR | Name of the graph to query |
+| `cypher_query` | VARCHAR | The Cypher query to run. Query parameters go here, with the `CYPHER` prefix (see [Query parameters](#query-parameters)) |
+| `options` | OBJECT (optional) | Write-back only: `OBJECT_CONSTRUCT('write', OBJECT_CONSTRUCT('outputTable', 'DATABASE.SCHEMA.TABLE'))`. Other keys are ignored, so query parameters cannot be passed here |
+
 Use `graph_query()` to run Cypher queries:
 
 ```sql
@@ -176,6 +182,35 @@ CALL <app_instance_name>.app_public.graph_query('social_graph',
    RETURN path'
 );
 ```
+
+#### Query results
+
+`graph_query()` returns the column names and the rows as JSON:
+
+```json
+{"columns": ["name", "age"], "data": [["Alice", 30], ["Bob", null]]}
+```
+
+- `null` values are returned as JSON `null`, so they are distinct from the string `"None"`.
+- Maps are JSON objects, for example `{"x": null, "y": "None", "z": 1}`.
+- Nodes and relationships are objects with a `"type"` of `"node"` or `"edge"`, plus their id, labels or relationship type, and properties.
+- Points are `{"latitude": ..., "longitude": ...}` and vectors are arrays of numbers.
+- Temporal values are `{"type": "date" | "time" | "datetime" | "duration", "seconds": ...}`.
+- NaN and infinity are returned as the strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
+
+#### Query parameters
+
+Pass parameters with the `CYPHER` prefix at the start of the query and reference them with `$name`:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query('social_graph',
+  'CYPHER name="Alice" min_age=30
+   MATCH (p:Person {name: $name}) WHERE p.age >= $min_age
+   RETURN p.name AS name, p.age AS age'
+);
+```
+
+Use double quotes for string values, because the query is inside single quotes in SQL. The third argument of `graph_query()` is for write-back options only (see below) and does not accept query parameters. Parameter values are part of the query text, so escape any user-supplied values before building the query.
 
 ### Writing Query Results Back to Snowflake
 

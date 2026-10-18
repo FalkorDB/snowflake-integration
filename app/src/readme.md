@@ -325,13 +325,23 @@ The FalkorDB app provides the following SQL procedures for graph management and 
 
 ### Graph Querying
 
+`graph_query` parameters:
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `graph_name` | VARCHAR | Name of the graph to query |
+| `cypher_query` | VARCHAR | The Cypher query to run. Query parameters go here, with the `CYPHER` prefix (see [Query parameters](#query-parameters)) |
+| `options` | OBJECT (optional) | Write-back only: `OBJECT_CONSTRUCT('write', OBJECT_CONSTRUCT('outputTable', 'DATABASE.SCHEMA.TABLE'))`. Other keys are ignored, so query parameters cannot be passed here |
+
 **`graph_query(graph_name VARCHAR, cypher_query VARCHAR)`**
 - Executes Cypher queries against a specified graph
-- Returns query results in Snowflake-compatible format
+- Returns the column names and the rows as JSON: `{"columns": [...], "data": [[...], ...]}`
 - Example: `CALL app_public.graph_query('my_graph', 'MATCH (n) RETURN n LIMIT 10');`
+- To pass query parameters, put them at the start of the query with the `CYPHER` prefix (see [Query parameters](#query-parameters))
 
 **`graph_query(graph_name VARCHAR, cypher_query VARCHAR, options OBJECT)`**
 - Executes a Cypher query and optionally writes the returned rows to a durable Snowflake table
+- `options` is for write-back only; it does not accept query parameters
 - The output table is created or replaced with `ROW_INDEX NUMBER` and `ROW_DATA VARIANT`
 - To write back, pass `OBJECT_CONSTRUCT('write', OBJECT_CONSTRUCT('outputTable', 'DATABASE.SCHEMA.TABLE'))`
 - Example:
@@ -353,6 +363,50 @@ The app must have permission to create the output table in the target schema:
 ```sql
 GRANT CREATE TABLE ON SCHEMA AIRROUTES_DB.RESULTS TO APPLICATION <app_instance_name>;
 ```
+
+#### Query results
+
+`graph_query()` returns the column names and the rows:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query('my_graph',
+  'MATCH (p:Person) RETURN p.name AS name, p.age AS age LIMIT 2');
+```
+
+```json
+{"columns": ["name", "age"], "data": [["Alice", 30], ["Bob", null]]}
+```
+
+Values are returned as JSON:
+
+| Cypher value | JSON |
+|---|---|
+| `null` | `null` |
+| string, integer, float, boolean | string, number, boolean |
+| list | array |
+| map | object, for example `{"x": null, "y": "None", "z": 1}` |
+| node | `{"type": "node", "id": ..., "labels": [...], "properties": {...}}` |
+| relationship | `{"type": "edge", "id": ..., "relationship_type": "...", "src_node_id": ..., "dst_node_id": ..., "properties": {...}}` |
+| point | `{"latitude": ..., "longitude": ...}` |
+| vector | array of numbers |
+| date, time, datetime, duration | `{"type": "date", "seconds": ...}` (and `time`, `datetime`, `duration`) |
+| NaN, Infinity | `"NaN"`, `"Infinity"`, `"-Infinity"` |
+
+When writing back with `write.outputTable`, each row of `data` is stored in `ROW_DATA`.
+
+#### Query parameters
+
+Pass parameters with the `CYPHER` prefix at the start of the query and reference them with `$name`:
+
+```sql
+CALL <app_instance_name>.app_public.graph_query('my_graph',
+  'CYPHER name="Alice" min_age=30
+   MATCH (p:Person {name: $name}) WHERE p.age >= $min_age
+   RETURN p.name AS name, p.age AS age');
+```
+
+- Use double quotes for string values, because the query itself is inside single quotes in SQL.
+- Parameter values are part of the query text, so escape any user-supplied values before building the query.
 
 **`shortest_path(graph_name VARCHAR, node_label VARCHAR, node_prop VARCHAR, source_value VARCHAR, target_value VARCHAR, rel_type VARCHAR, weight_prop VARCHAR)`**
 - Finds the weighted shortest path between two nodes using FalkorDB's `algo.SPpaths` (Dijkstra)
